@@ -1,0 +1,563 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import mona from '../../assets/mona.png';
+import copilot from '../../assets/copilot.png';
+import ducky from '../../assets/ducky.png';
+import githubInfoMarkdown from '../../content/github-info.md?raw';
+
+const publishedDateLabel = new Intl.DateTimeFormat('en-US', {
+  month: 'long',
+  day: 'numeric',
+  year: 'numeric',
+}).format(new Date());
+
+function toPlainText(value) {
+  return value
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_]/g, '')
+    .trim();
+}
+
+function extractDateFromText(value) {
+  const match = value.match(
+    /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}|(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/i
+  );
+
+  return match ? match[0] : '';
+}
+
+function getPostedDate({ sourceLabel, summary }) {
+  const sourceDate = extractDateFromText(sourceLabel || '');
+  if (sourceDate) {
+    return sourceDate;
+  }
+
+  const summaryDate = extractDateFromText(summary || '');
+  if (summaryDate) {
+    return summaryDate;
+  }
+
+  return publishedDateLabel;
+}
+
+function getMarkdownSections(markdown) {
+  const sections = [];
+  let currentSection;
+
+  for (const line of markdown.split('\n')) {
+    if (line.startsWith('## ')) {
+      if (currentSection) {
+        sections.push(currentSection);
+      }
+
+      currentSection = {
+        title: toPlainText(line.replace(/^##\s+/, '')),
+        lines: [],
+      };
+
+      continue;
+    }
+
+    if (currentSection && !line.startsWith('# ')) {
+      currentSection.lines.push(line);
+    }
+  }
+
+  if (currentSection) {
+    sections.push(currentSection);
+  }
+
+  return sections;
+}
+
+function splitSectionEntries(section) {
+  const entries = [];
+  let currentEntry = {
+    title: section.title,
+    lines: [],
+  };
+
+  for (const line of section.lines) {
+    if (line.startsWith('### ')) {
+      entries.push(currentEntry);
+      currentEntry = {
+        title: toPlainText(line.replace(/^###\s+/, '')),
+        lines: [],
+      };
+      continue;
+    }
+
+    currentEntry.lines.push(line);
+  }
+
+  entries.push(currentEntry);
+  return entries;
+}
+
+function isSourceLine(line) {
+  const normalized = line.replace(/^>\s*/, '').trim();
+  return /^\*?source:/i.test(normalized);
+}
+
+function isTableLine(line) {
+  return /^\|.*\|$/.test(line);
+}
+
+function getEntryContent(entryLines) {
+  const paragraphs = [];
+  const bullets = [];
+
+  for (const line of entryLines) {
+    const trimmedLine = line.trim();
+
+    if (!trimmedLine || isSourceLine(trimmedLine) || isTableLine(trimmedLine)) {
+      continue;
+    }
+
+    if (trimmedLine.startsWith('- ')) {
+      bullets.push(toPlainText(trimmedLine.replace(/^-\s+/, '')));
+      continue;
+    }
+
+    paragraphs.push(toPlainText(trimmedLine.replace(/^>\s*/, '')));
+  }
+
+  return {
+    paragraphs,
+    bullets,
+    summary: paragraphs[0] ?? bullets.join(' '),
+  };
+}
+
+const contentUpdates = getMarkdownSections(githubInfoMarkdown)
+  .flatMap((section) => splitSectionEntries(section).map((entry) => {
+    const { paragraphs, bullets, summary } = getEntryContent(entry.lines);
+    const sourceLine = entry.lines.find((line) => isSourceLine(line.trim()));
+    const sourceLabel = sourceLine ? toPlainText(sourceLine.replace(/^\*?Source:\s*/i, '').replace(/^\*|\*$/g, '')) : '';
+    const postedDate = getPostedDate({ sourceLabel, summary });
+
+    return {
+      type: 'From github-info.md',
+      date: postedDate,
+      section: section.title,
+      title: entry.title,
+      summary,
+      href: '#content-sources',
+      bullets,
+      sourceLabel,
+      hasDetails: paragraphs.length > 0 || bullets.length > 0,
+    };
+  }))
+  .filter((update) => update.summary && update.hasDetails)
+  .map(({ hasDetails, ...update }) => update);
+
+const latestContentUpdates = contentUpdates.filter((update) => update.section === 'Latest GitHub Updates');
+const supportingContentUpdates = contentUpdates.filter((update) => update.section !== 'Latest GitHub Updates');
+const latestBlogOrChangelogUpdates = latestContentUpdates.filter((update) =>
+  /github\s+(blog|changelog)/i.test(update.sourceLabel)
+);
+const latestOtherUpdates = latestContentUpdates.filter((update) =>
+  !/github\s+(blog|changelog)/i.test(update.sourceLabel)
+);
+
+const latestMarkdownHighlight = latestBlogOrChangelogUpdates.find(
+  (update) => update.title !== 'Latest GitHub Updates'
+) ?? latestContentUpdates.find((update) => update.title !== 'Latest GitHub Updates');
+
+const latestRelease = latestMarkdownHighlight
+  ? {
+    eyebrow: 'Latest repository highlight',
+    title: latestMarkdownHighlight.title,
+    date: latestMarkdownHighlight.date,
+    summary: latestMarkdownHighlight.summary,
+    href: '#recent-updates',
+  }
+  : {
+    eyebrow: 'Latest release highlight',
+    title: 'Secret scanning in AI coding agents via the GitHub MCP Server',
+    date: 'GitHub Changelog · March 17, 2026',
+    summary:
+      'GitHub now supports secret scanning in AI coding agents through the GitHub MCP Server, helping teams catch exposed credentials and sensitive data earlier in automated coding flows.',
+    href: 'https://github.blog/changelog/2026-03-17-secret-scanning-in-ai-coding-agents-via-the-github-mcp-server/',
+  };
+
+const recentUpdates = [
+  {
+    type: 'GitHub Changelog',
+    date: 'March 20, 2026',
+    title: 'Copilot usage metrics now resolve auto model selection to actual models',
+    summary:
+      'Organizations now get clearer visibility into which underlying models were actually used when Copilot auto model selection is enabled.',
+    href: 'https://github.blog/changelog/2026-03-20-copilot-usage-metrics-now-resolve-auto-model-selection-to-actual-models/',
+  },
+  {
+    type: 'GitHub Changelog',
+    date: 'March 19, 2026',
+    title: 'View code and comments side-by-side in pull request Files changed page',
+    summary:
+      'GitHub improved pull request review by letting developers see code and review comments together in one view.',
+    href: 'https://github.blog/changelog/2026-03-19-view-code-and-comments-side-by-side-in-pull-request-files-changed-page/',
+  },
+  {
+    type: 'GitHub Blog',
+    date: 'March 19, 2026',
+    title: 'How Squad runs coordinated AI agents inside your repository',
+    summary:
+      'This deep dive explains how repository-native multi-agent workflows can stay inspectable, predictable, and collaborative.',
+    href: 'https://github.blog/2026-03-19-how-squad-runs-coordinated-ai-agents-inside-your-repository/',
+  },
+  {
+    type: 'GitHub Blog',
+    date: 'March 19, 2026',
+    title: 'Rethinking open source mentorship in the AI era',
+    summary:
+      'GitHub explores a practical framework for scaling mentorship as AI-driven contributions increase across open source projects.',
+    href: 'https://github.blog/2026-03-19-rethinking-open-source-mentorship-in-the-ai-era/',
+  },
+];
+
+const homepageUpdates = [
+  ...latestBlogOrChangelogUpdates,
+  ...latestOtherUpdates,
+  ...recentUpdates,
+  ...supportingContentUpdates,
+];
+
+const sourceGroups = [
+  {
+    eyebrow: 'From docs.github.com',
+    title: 'The GitHub platform in one view',
+    description:
+      'GitHub documentation describes repositories, branches, pull requests, and merges as the core collaboration loop. Mona uses that same flow to keep website updates reviewable and safe.',
+    bullets: [
+      'Repositories store and share code so teams can collaborate in one place.',
+      'Branches let contributors make changes safely before they are ready to merge.',
+      'Pull requests give collaborators a place to review changes and suggest improvements.',
+    ],
+    link: 'https://docs.github.com/en/get-started/start-your-journey/about-github-and-git',
+    linkLabel: 'Read: About GitHub and Git',
+  },
+  {
+    eyebrow: 'From docs.github.com',
+    title: 'Copilot helps teams code, chat, and ship faster',
+    description:
+      'GitHub Copilot is documented as an AI coding assistant that works across the IDE, command line, mobile, and GitHub itself, making it a strong fit for Mona’s publishing workflow.',
+    bullets: [
+      'Suggests code and content as you work.',
+      'Supports chat, CLI help, and pull request assistance.',
+      'Can work on changes and create a pull request for review on eligible plans.',
+    ],
+    link: 'https://docs.github.com/en/copilot/about-github-copilot/what-is-github-copilot',
+    linkLabel: 'Read: What is GitHub Copilot?',
+  },
+  {
+    eyebrow: 'From docs.github.com',
+    title: 'Actions turns repository events into automation',
+    description:
+      'GitHub Actions documentation explains how workflows, jobs, steps, actions, and runners fit together. Mona’s publishing pipeline uses the same building blocks.',
+    bullets: [
+      'Workflows live in `.github/workflows` and can run on events, schedules, or manual dispatch.',
+      'Jobs can run sequentially or in parallel depending on dependencies.',
+      'Reusable actions reduce repeated setup work in automation.',
+    ],
+    link: 'https://docs.github.com/en/actions/get-started/understand-github-actions',
+    linkLabel: 'Read: Understand GitHub Actions',
+  },
+];
+
+const highlights = [
+  {
+    title: 'Newest signals first',
+    text: 'The homepage now leads with changelog and blog items so readers see fresh GitHub movement before deeper reference material.',
+  },
+  {
+    title: 'Trusted sources',
+    text: 'Every card points back to official GitHub references from docs, the blog, or the changelog.',
+  },
+  {
+    title: 'Review-first workflow',
+    text: 'Mona keeps automation inside a pull request flow so every update can be checked before it goes live.',
+  },
+];
+---
+
+<BaseLayout
+  title="DocVisitMobile | Doctor workspace"
+  description="A doctor workspace for appointments, patients, and prescriptions."
+>
+  <div class="login-shell" id="login-screen">
+    <section class="login-panel" aria-labelledby="login-title">
+      <a class="brand-lockup login-brand" href="/" aria-label="DocPatient home"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <div class="login-copy"><p class="eyebrow">DOCTOR WORKSPACE</p><h1 id="login-title">Your Gateway to Patient Care</h1><p>Appointments, patient notes, and prescriptions, together in one clear view.</p></div>
+      <form class="login-form" id="login-form">
+        <label for="login-user-id">User ID</label><input id="login-user-id" name="userId" type="text" autocomplete="username" required />
+        <label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required />
+        <button class="button button--primary button--wide" type="submit">Sign in</button>
+        <p class="login-error" id="login-error" role="alert" hidden></p>
+      </form>
+      <p class="demo-notice"><span class="status-dot"></span> Accounts are provisioned by your practice administrator.</p>
+    </section>
+    <aside class="login-aside" aria-label="Daily practice overview">
+      <div class="aside-topline"><span id="login-date">TODAY</span><span>YOUR PRACTICE, IN FOCUS</span></div>
+      <div class="aside-content"><p class="aside-kicker">Today at a glance</p><p class="aside-number"><span id="login-appointment-count">00</span><span> appointments</span></p><div class="aside-rule"></div>
+        <div class="aside-appointment"><span class="aside-time">09:30</span><span><strong>Olivia Rhye</strong><small>Annual check-up · Room 02</small></span><span class="aside-status">Arrived</span></div>
+        <div class="aside-appointment"><span class="aside-time">10:15</span><span><strong>Phoenix Baker</strong><small>Follow-up · Room 01</small></span><span class="aside-status aside-status--upcoming">Upcoming</span></div>
+        <div class="aside-appointment"><span class="aside-time">11:00</span><span><strong>Lana Steiner</strong><small>Consultation · Room 03</small></span><span class="aside-status aside-status--upcoming">Upcoming</span></div>
+      </div>
+      <p class="aside-foot">A considered view of the work that matters.</p>
+    </aside>
+  </div>
+
+  <div class="login-shell password-shell" id="setup-screen" hidden>
+    <section class="login-panel" aria-labelledby="setup-title">
+      <a class="brand-lockup" href="/" aria-label="DocPatient home"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <div class="login-copy"><p class="eyebrow">FIRST-RUN SETUP</p><h1 id="setup-title">Set up your practice admin.</h1><p>Create the initial superadmin password for this local DocVisitMobile instance.</p></div>
+      <form class="login-form" id="setup-form">
+        <label for="setup-user-id">Superadmin user ID</label><input id="setup-user-id" name="userId" type="text" value="maniksar" readonly />
+        <label for="setup-password">New password</label><input id="setup-password" name="password" type="password" autocomplete="new-password" minlength="12" required />
+        <label for="setup-confirm-password">Confirm password</label><input id="setup-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required />
+        <button class="button button--primary button--wide" type="submit">Create superadmin</button>
+        <p class="login-error" id="setup-error" role="alert" hidden></p>
+      </form>
+      <p class="demo-notice">Use a new password with at least 12 characters. Setup is limited to this computer.</p>
+    </section>
+    <aside class="login-aside"><div class="aside-content"><p class="aside-kicker">ONE-TIME SETUP</p><p class="aside-number">Admin<span> account</span></p><div class="aside-rule"></div><p class="aside-foot">The password is stored as a one-way hash and is never written to this project’s source.</p></div></aside>
+  </div>
+
+  <div class="login-shell password-shell" id="password-screen" hidden>
+    <section class="login-panel" aria-labelledby="password-title">
+      <a class="brand-lockup" href="/" aria-label="DocPatient home"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <div class="login-copy"><p class="eyebrow">FIRST SIGN-IN</p><h1 id="password-title">Set a new password.</h1><p>Your administrator gave you a temporary password. Replace it before continuing.</p></div>
+      <form class="login-form" id="password-form">
+        <label for="new-password">New password</label><input id="new-password" name="password" type="password" autocomplete="new-password" minlength="12" required />
+        <label for="confirm-password">Confirm new password</label><input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required />
+        <button class="button button--primary button--wide" type="submit">Update password</button>
+        <p class="login-error" id="password-error" role="alert" hidden></p>
+      </form>
+      <p class="demo-notice">Use at least 12 characters. Keep it private.</p>
+    </section>
+    <aside class="login-aside"><div class="aside-content"><p class="aside-kicker">ACCOUNT SECURITY</p><p class="aside-number">One time<span> password reset</span></p><div class="aside-rule"></div><p class="aside-foot">Your temporary password stops working after you choose a new one.</p></div></aside>
+  </div>
+
+  <main class="app-shell" id="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand-lockup" href="#dashboard" aria-label="DocPatient dashboard"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <div class="doctor-identity"><span class="avatar avatar--doctor" id="account-initials">DM</span><span><strong id="account-name">DocVisitMobile</strong><small id="account-role">Practice account</small></span></div>
+      <p class="nav-label">WORKSPACE</p>
+      <nav class="primary-nav" aria-label="Main navigation">
+        <button class="nav-item" type="button" data-view="patients" data-doctor-only><span class="nav-symbol">◉</span>Patients</button>
+        <button class="nav-item" type="button" data-view="doctors" data-admin-only hidden><span class="nav-symbol">♙</span>Doctors</button>
+      </nav>
+      <div class="sidebar-bottom"><button class="nav-item nav-item--muted" type="button" id="logout-button"><span class="nav-symbol">↗</span>Sign out</button></div>
+    </aside>
+    <div class="main-column">
+      <header class="topbar"><label class="search-box" for="global-search" data-doctor-only><span aria-hidden="true">⌕</span><input id="global-search" type="search" placeholder="Search patients, appointments..." /><kbd>⌘ K</kbd></label><div class="topbar-actions"><span class="today-label" id="today-label"></span><button class="icon-button logout-icon" type="button" id="logout-icon" aria-label="Sign out" title="Sign out">↗</button><span class="avatar avatar--small" id="account-avatar">DP</span></div></header>
+      <div class="content-area">
+        <section class="page-heading"><div><p class="eyebrow" id="date-eyebrow">YOUR PRACTICE</p><h1 id="greeting"></h1><p class="page-subtitle" id="page-subtitle"></p></div><div class="page-heading-actions"><button class="button button--secondary" type="button" id="return-to-patients" hidden>← Patients</button><button class="button button--secondary" type="button" id="return-to-doctors" hidden>← Doctor profiles</button><button class="button button--primary" type="button" data-action="new-appointment" data-doctor-only><span class="button-plus">+</span> New appointment</button></div></section>
+        <section class="metric-grid" id="metric-grid" data-doctor-only aria-label="Practice summary"></section>
+        <section class="view-panel" data-panel="dashboard" data-doctor-only><div class="dashboard-grid">
+          <section class="surface schedule-surface"><div class="surface-heading"><div><p class="eyebrow">THE DAY AHEAD</p><h2>Today’s appointments</h2></div><button class="text-button" type="button" data-view="appointments">Full schedule <span>→</span></button></div><div class="appointment-list" id="today-appointments"></div></section>
+          <section class="surface focus-surface"><div class="surface-heading"><div><p class="eyebrow">NEEDS YOUR ATTENTION</p><h2>Prescription renewals</h2></div><span class="attention-count" id="renewal-count">0</span></div><div class="renewal-list" id="renewal-list"></div><button class="text-button renewal-link" type="button" data-view="prescriptions">Review prescriptions <span>→</span></button></section>
+        </div><section class="surface activity-surface"><div class="surface-heading"><div><p class="eyebrow">RECENTLY ADDED</p><h2>Patient directory</h2></div><button class="text-button" type="button" data-view="patients">View all patients <span>→</span></button></div><div class="patient-strip" id="patient-strip"></div></section></section>
+        <section class="view-panel" data-panel="appointments" data-doctor-only hidden><section class="surface table-surface"><div class="surface-heading table-heading"><div><p class="eyebrow">YOUR SCHEDULE</p><h2>All appointments</h2></div><label class="filter-select">Date <select id="appointment-filter"><option value="all">All dates</option><option value="today">Today</option><option value="upcoming">Upcoming</option></select></label></div><div class="table-scroll"><table><thead><tr><th>Patient</th><th>Date &amp; time</th><th>Visit type</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="appointments-rows"></tbody></table></div><p class="empty-state" id="appointments-empty" hidden>No appointments match this view.</p></section></section>
+        <section class="view-panel" data-panel="patients" data-doctor-only hidden>
+          <div class="section-toolbar"><p class="section-note">A clear view of your patient relationships.</p><div class="patient-toolbar-tools"><label class="patient-search" for="patient-search"><span aria-hidden="true">⌕</span><input id="patient-search" type="search" placeholder="Filter patients" /></label><div class="patient-toolbar-actions"><div class="view-switch" role="group" aria-label="Patient display mode"><button class="view-switch-button is-active" type="button" data-patient-mode="grid" aria-label="Grid view" title="Grid view" aria-pressed="true">▦</button><button class="view-switch-button" type="button" data-patient-mode="list" aria-label="List view" title="List view" aria-pressed="false">☷</button></div><button class="button button--secondary" type="button" data-action="new-patient" id="add-patient-button"><span class="button-plus">+</span> Add patient</button></div></div></div>
+          <div class="patient-grid" id="patient-grid"></div>
+          <section class="surface patient-list-surface" id="patient-list" hidden><div class="table-scroll"><table><thead><tr><th>Patient</th><th>Address</th><th>Email</th><th>Phone</th><th>Date of birth</th><th>Last visit</th></tr></thead><tbody id="patient-list-rows"></tbody></table></div></section>
+          <p class="empty-state" id="patients-empty" hidden>No patients match your search.</p>
+        </section>
+        <section class="view-panel" data-panel="patient-history" data-doctor-only hidden><section class="surface patient-history-page"><div id="patient-history-details"></div><label class="history-medication-search" for="history-medication-search"><span aria-hidden="true">⌕</span><input id="history-medication-search" type="search" placeholder="Search appointments and medications" /></label><section class="history-section"><div class="history-column-heads"><h3>Appointment date</h3><h3>Medications</h3></div><div id="patient-history-content"></div><p class="history-search-empty" id="history-search-empty" hidden>No matching appointments or medications found.</p></section></section></section>
+        <section class="view-panel" data-panel="prescriptions" data-doctor-only hidden><section class="surface table-surface"><div class="surface-heading table-heading"><div><p class="eyebrow">MEDICATION MANAGEMENT</p><h2>Prescriptions</h2></div><button class="button button--secondary" type="button" data-action="new-prescription"><span class="button-plus">+</span> New prescription</button></div><div class="table-scroll"><table><thead><tr><th>Patient</th><th>Medication</th><th>Directions</th><th>Appointment</th><th>Files</th><th>Refills</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="prescription-rows"></tbody></table></div><p class="empty-state" id="prescriptions-empty" hidden>No prescriptions match your search.</p></section></section>
+        <section class="view-panel" data-panel="doctors" data-admin-only hidden><section class="surface table-surface"><div class="surface-heading table-heading"><div><p class="eyebrow">PRACTICE ACCESS</p><h2>Doctor profiles</h2></div><button class="button button--primary" type="button" data-action="new-doctor"><span class="button-plus">+</span> Create doctor</button></div><div class="table-scroll"><table><thead><tr><th><span class="sr-only">Actions</span></th><th>Doctor</th><th>User ID</th><th>Address</th><th>Package</th><th>Register Date</th><th>Last Renewal</th><th>Expiry Date</th><th>Specialty</th><th>Email</th><th>First sign-in</th></tr></thead><tbody id="doctor-rows"></tbody></table></div><p class="empty-state" id="doctors-empty" hidden>No doctor profiles yet.</p></section><p class="admin-note">Temporary passwords are shown once. Share them securely; doctors must replace them at first sign-in.</p></section>
+        <footer class="app-footer"><span>DocVisitMobile · Demo environment</span><span>Sample data only. Not for clinical use.</span></footer>
+      </div>
+    </div>
+  </main>
+  <div id="modal-root"></div>
+  <main class="page-shell">
+    <section class="hero">
+      <div class="hero__copy">
+        <span class="eyebrow">Mona's Astro website</span>
+        <h1>The newest GitHub updates, organized for busy developers.</h1>
+        <p class="lead">
+          Mona’s GitHub Info site now leads with what is freshest from the GitHub Blog and Changelog, then
+          gives readers the docs context they need lower on the page.
+        </p>
+
+        <div class="hero__actions">
+          <a class="button button--primary" href="#latest-release">See latest release</a>
+          <a class="button button--ghost" href="#recent-updates">Browse fresh updates</a>
+        </div>
+
+        <div class="mini-stats">
+          <article>
+            <strong>1</strong>
+            <span>featured release headline</span>
+          </article>
+          <article>
+            <strong>{homepageUpdates.length}</strong>
+            <span>content-backed update cards</span>
+          </article>
+          <article>
+            <strong>3</strong>
+            <span>docs references for deeper learning</span>
+          </article>
+        </div>
+      </div>
+
+      <div class="hero__visual">
+        <div class="orb orb--pink"></div>
+        <div class="orb orb--blue"></div>
+        <div class="hero-card hero-card--mona">
+          <img src={mona.src} alt="Mona character artwork" loading="eager" />
+          <div>
+            <p>Mona</p>
+            <span>Curates the signal from GitHub’s fastest-moving updates</span>
+          </div>
+        </div>
+        <div class="hero-card hero-card--copilot">
+          <img src={copilot.src} alt="GitHub Copilot artwork" />
+          <div>
+            <p>Copilot</p>
+            <span>Helps summarize and shape the newest information</span>
+          </div>
+        </div>
+        <div class="hero-card hero-card--ducky">
+          <img src={ducky.src} alt="Ducky character artwork" />
+          <div>
+            <p>Ducky</p>
+            <span>Keeps the homepage cheerful and approachable</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="release-spotlight" id="latest-release">
+      <div class="release-spotlight__copy">
+        <span class="eyebrow">{latestRelease.eyebrow}</span>
+        <h2>{latestRelease.title}</h2>
+        <p class="release-spotlight__meta">{latestRelease.date}</p>
+        <p>{latestRelease.summary}</p>
+        <a class="button button--primary" href={latestRelease.href} target="_blank" rel="noreferrer">
+          Open changelog item
+        </a>
+      </div>
+      <div class="release-spotlight__media">
+        <img src={copilot.src} alt="Copilot artwork next to the latest release headline" />
+      </div>
+    </section>
+
+    <section class="updates" id="recent-updates">
+      <div class="section-heading">
+        <span class="eyebrow">Newest information first</span>
+        <h2>Repository notes, blog stories, and changelog updates</h2>
+        <p>
+          Mona now surfaces updates from <code>site/content/github-info.md</code> alongside curated GitHub Blog and
+          Changelog stories, so the homepage changes when the repository content changes.
+        </p>
+      </div>
+
+      <div class="updates-grid">
+        {homepageUpdates.map((update) => (
+          <article class="update-card">
+            <span class:list={["pill", update.type === 'GitHub Changelog' ? 'pill--gold' : 'pill--violet']}>
+              {update.type}
+            </span>
+            <p class="update-card__date">{update.date}</p>
+            <h3>{update.title}</h3>
+            <p>{update.summary}</p>
+            {update.bullets?.length > 0 && (
+              <ul>
+                {update.bullets.map((bullet) => (
+                  <li>{bullet}</li>
+                ))}
+              </ul>
+            )}
+            <a
+              href={update.href}
+              target={update.href.startsWith('#') ? undefined : '_blank'}
+              rel={update.href.startsWith('#') ? undefined : 'noreferrer'}
+            >
+              {update.href.startsWith('#') ? 'Review repository content' : 'Read official source'}
+            </a>
+          </article>
+        ))}
+      </div>
+    </section>
+
+    <section class="highlights">
+      {highlights.map((item) => (
+        <article class="highlight-card">
+          <h2>{item.title}</h2>
+          <p>{item.text}</p>
+        </article>
+      ))}
+    </section>
+
+    <section class="feature-band">
+      <div class="feature-band__copy">
+        <span class="eyebrow">Why this homepage structure works</span>
+        <h2>Freshness at the top, reference depth lower down</h2>
+        <p>
+          The top of the page acts like a GitHub briefing: latest release headline first, then recent stories and
+          product updates. Lower sections help readers go deeper with official docs.
+        </p>
+        <ul class="checklist">
+          <li>Lead with the newest changelog and blog signals.</li>
+          <li>Give readers short summaries before they leave the page.</li>
+          <li>Keep docs available lower down for learning and follow-up.</li>
+        </ul>
+      </div>
+      <div class="feature-band__media">
+        <img src={mona.src} alt="Mona artwork for site structure explanation" />
+      </div>
+    </section>
+
+    <section class="story-grid" id="content-sources">
+      <div class="section-heading">
+        <span class="eyebrow">Reference shelf</span>
+        <h2>GitHub docs for deeper context</h2>
+        <p>
+          Once readers have scanned the newest updates, they can move into the documentation section for the core
+          GitHub concepts behind Mona’s summaries.
+        </p>
+      </div>
+
+      <div class="source-grid">
+        {sourceGroups.map((group) => (
+          <article class="source-card">
+            <span class="eyebrow">{group.eyebrow}</span>
+            <h3>{group.title}</h3>
+            <p>{group.description}</p>
+            <ul>
+              {group.bullets.map((bullet) => (
+                <li>{bullet}</li>
+              ))}
+            </ul>
+            <a href={group.link} target="_blank" rel="noreferrer">{group.linkLabel}</a>
+          </article>
+        ))}
+      </div>
+    </section>
+
+    <section class="closing-callout">
+      <div class="closing-callout__copy">
+        <span class="eyebrow">Mona’s publishing promise</span>
+        <h2>Fast updates, human judgment, cheerful branding.</h2>
+        <p>
+          Mona uses official GitHub sources to stay current, keeps the newest information near the top, and still
+          treats review as part of the publishing process.
+        </p>
+        <div class="source-links">
+          <a href="https://docs.github.com/" target="_blank" rel="noreferrer">docs.github.com</a>
+          <a href="https://github.blog/" target="_blank" rel="noreferrer">github.blog</a>
+          <a href="https://github.blog/changelog/" target="_blank" rel="noreferrer">github.blog/changelog</a>
+        </div>
+      </div>
+      <div class="closing-callout__art">
+        <img src={ducky.src} alt="Ducky artwork standing in for a cheerful mascot" />
+      </div>
+    </section>
+  </main>
+  <script src="../scripts/portal.js"></script>
+</BaseLayout>

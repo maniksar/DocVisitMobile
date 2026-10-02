@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 4322,
+  "superadminUserId": "maniksar",
+  "databasePath": "./data/docvisitmobile.sqlite",
+  "sessionLifetimeSeconds": 43200
+}
