@@ -22,6 +22,22 @@ Create a MariaDB database and user, then configure `DB_HOST`, `DB_PORT`,
 `docvisit_users` and `docvisit_sessions` tables on startup. Never commit
 `.env.local` or put database credentials in source control.
 
+### Create the database tables manually
+
+If you want to create the tables before starting the app, select your
+DocVisitMobile database in Hostinger phpMyAdmin and import
+[`database/schema.sql`](./database/schema.sql). The script creates the users
+and sessions tables using the default `DB_TABLE_PREFIX=docvisit`. If you set a
+different prefix, rename both table names and the sessions foreign-key
+constraint in the script to match it. The app's database user needs permission
+to create tables and manage sessions.
+
+The script creates the schema only; it does not add an admin account or store a
+password. On first app start, set `SUPERADMIN_PASSWORD` in the server
+environment. DocVisitMobile creates the `maniksar` admin account and stores a
+one-way password hash. Patient, appointment, and prescription data are not
+stored in these MariaDB tables; they remain in browser storage.
+
 ## Hostinger deployment
 
 Use a Hostinger Node.js-capable hosting plan (or VPS) with Node.js 22.12 or
