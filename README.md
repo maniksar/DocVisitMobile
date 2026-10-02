@@ -1,8 +1,9 @@
 # DocVisitMobile
 
 DocVisitMobile is a standalone, installable PWA clone of DocVisit. It uses a
-MariaDB database for authentication and browser-side demo record stores; it does
-not share the original app's local data.
+MariaDB database for authentication and patient records, and browser storage for
+appointments, prescriptions, and attachments; it does not share the original
+app's local data.
 
 ## Run locally
 
@@ -50,10 +51,11 @@ written to MariaDB through authenticated patient endpoints and loaded from the
 server. Existing patient entries stored in browsers are not automatically
 migrated because they do not have the required gender and age values.
 For patients, only full name, gender, and age are mandatory; address/locality,
-email, phone, and date of birth may be left blank.
-Appointments, prescriptions, and their attachment blobs still use browser local
-storage/IndexedDB and are not yet persisted in their MariaDB tables. Do not
-enter real patient information.
+email, phone, and date of birth may be left blank. Patient data is loaded from
+MariaDB; browser-stored patient records are discarded and are not shown after
+sign-in. Appointments, prescriptions, and their attachment blobs still use
+browser local storage/IndexedDB and are not yet persisted in their MariaDB
+tables. Do not enter real patient information.
 
 ## Hostinger deployment
 
@@ -86,11 +88,12 @@ with `MARIADB_TEST_HOST`, `MARIADB_TEST_PORT`, `MARIADB_TEST_DATABASE`,
 `MARIADB_TEST_USER`, and `MARIADB_TEST_PASSWORD`. The test suite creates and
 drops uniquely prefixed tables in that database.
 
-**Prototype only:** patient, appointment, and prescription records currently
-live in each browser's local storage; the app does not provide a secure,
-shared server-side clinical record store, audit logging, or a production
-health-data compliance setup. Do not enter real patient information. Public
-HTTPS hosting does not make the prototype appropriate for clinical use.
+**Prototype only:** patient records are stored in MariaDB, but appointment and
+prescription records currently live in each browser's local storage; the app
+does not provide a secure, shared clinical record store for all data, audit
+logging, or a production health-data compliance setup. Do not enter real patient
+information. Public HTTPS hosting does not make the prototype appropriate for
+clinical use.
 
 ## Install on a phone
 

@@ -4,14 +4,6 @@ const today = new Date();
 const isoDate = (date) => date.toISOString().slice(0, 10);
 const addDays = (days) => { const date = new Date(); date.setDate(date.getDate() + days); return isoDate(date); };
 function createExistingDoctorSampleRecords() {
-  const patients = [
-    { id: 'pt-1', doctorId: 'moumitasarkar', name: 'Olivia Rhye', email: 'olivia.rhye@example.test', phone: '(555) 014-8271', birthDate: '1988-04-12', lastVisit: addDays(-18), initials: 'OR' },
-    { id: 'pt-2', doctorId: 'moumitasarkar', name: 'Phoenix Baker', email: 'phoenix.baker@example.test', phone: '(555) 013-6620', birthDate: '1992-11-03', lastVisit: addDays(-31), initials: 'PB' },
-    { id: 'pt-3', doctorId: 'moumitasarkar', name: 'Lana Steiner', email: 'lana.steiner@example.test', phone: '(555) 018-4509', birthDate: '1976-06-27', lastVisit: addDays(-7), initials: 'LS' },
-    { id: 'pt-4', doctorId: 'romitasarkar', name: 'Demi Wilkinson', email: 'demi.wilkinson@example.test', phone: '(555) 011-0938', birthDate: '1983-09-16', lastVisit: addDays(-62), initials: 'DW' },
-    { id: 'pt-5', doctorId: 'romitasarkar', name: 'Candice Wu', email: 'candice.wu@example.test', phone: '(555) 017-5521', birthDate: '1990-02-22', lastVisit: addDays(-14), initials: 'CW' },
-    { id: 'pt-6', doctorId: 'romitasarkar', name: 'Natali Craig', email: 'natali.craig@example.test', phone: '(555) 015-7743', birthDate: '1969-12-08', lastVisit: addDays(-44), initials: 'NC' },
-  ];
   const appointments = [
     { id: 'ap-1', doctorId: 'moumitasarkar', patientId: 'pt-1', date: addDays(0), time: '09:30', type: 'Annual check-up', room: 'Room 02', status: 'Checked in' },
     { id: 'ap-2', doctorId: 'moumitasarkar', patientId: 'pt-2', date: addDays(0), time: '10:15', type: 'Follow-up', room: 'Room 01', status: 'Confirmed' },
@@ -26,7 +18,7 @@ function createExistingDoctorSampleRecords() {
     { id: 'rx-3', doctorId: 'romitasarkar', patientId: 'pt-3', medication: 'Metformin', directions: '500 mg · Twice daily', refills: 1, status: 'Active', expires: addDays(30) },
     { id: 'rx-4', doctorId: 'romitasarkar', patientId: 'pt-4', medication: 'Amlodipine', directions: '5 mg · Once daily', refills: 0, status: 'Renewal due', expires: addDays(7) },
   ];
-  return { patients, appointments, prescriptions };
+  return { appointments, prescriptions };
 }
 function loadRecords() {
   let saved;
@@ -38,14 +30,8 @@ function loadRecords() {
   const records = saved && ['patients', 'appointments', 'prescriptions'].every((key) => Array.isArray(saved[key]))
     ? saved
     : { patients: [], appointments: [], prescriptions: [] };
+  records.patients = [];
 
-  const demoPatientIds = new Set(['pt-1', 'pt-2', 'pt-3', 'pt-4', 'pt-5', 'pt-6']);
-  const demoPatientNames = new Set(['Olivia Rhye', 'Phoenix Baker', 'Lana Steiner', 'Demi Wilkinson', 'Candice Wu', 'Natali Craig']);
-  for (const patient of records.patients) {
-    if (demoPatientIds.has(patient.id) && demoPatientNames.has(patient.name) && !patient.doctorId) {
-      patient.doctorId = patient.id === 'pt-1' || patient.id === 'pt-2' || patient.id === 'pt-3' ? 'moumitasarkar' : 'romitasarkar';
-    }
-  }
   for (const appointment of records.appointments) {
     if (/^ap-[1-6]$/.test(appointment.id) && !appointment.doctorId) {
       appointment.doctorId = Number(appointment.id.slice(3)) <= 3 ? 'moumitasarkar' : 'romitasarkar';
@@ -59,17 +45,15 @@ function loadRecords() {
 
   if (!saved?.existingDoctorSampleDataRestored) {
     const samples = createExistingDoctorSampleRecords();
-    for (const key of ['patients', 'appointments', 'prescriptions']) {
+    for (const key of ['appointments', 'prescriptions']) {
       const existingIds = new Set(records[key].map((record) => record.id));
       records[key].push(...samples[key].filter((record) => !existingIds.has(record.id)));
     }
     records.existingDoctorSampleDataRestored = true;
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(records));
-    } catch {
-      /* Keep the restored records available for this page session. */
-    }
   }
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(records));
+  } catch { /* Keep this page session usable. */ }
   return records;
 }
 const records = loadRecords();
@@ -123,18 +107,17 @@ async function api(path, options = {}) {
   return result;
 }
 function saveRecords() {
-  const demoPatientIds = new Set(['pt-1', 'pt-2', 'pt-3', 'pt-4', 'pt-5', 'pt-6']);
   try {
     localStorage.setItem(storageKey, JSON.stringify({
       ...records,
-      patients: records.patients.filter((patient) => demoPatientIds.has(patient.id)),
+      patients: [],
     }));
   } catch { /* Keep this page session usable. */ }
 }
 async function loadPatients() {
   const { patients } = await api('/api/patients');
-  const demoPatients = createExistingDoctorSampleRecords().patients;
-  records.patients = [...demoPatients, ...patients];
+  records.patients = patients;
+  saveRecords();
 }
 function openAttachmentDb() {
   if (!attachmentDbPromise) {
@@ -416,7 +399,8 @@ async function showApp(user) {
   try {
     await loadPatients();
   } catch (error) {
-    records.patients = createExistingDoctorSampleRecords().patients;
+    records.patients = [];
+    saveRecords();
     byId('patient-storage-error').textContent = `Patient records could not be loaded from the server: ${error.message}`;
     byId('patient-storage-error').hidden = false;
   }
