@@ -39,6 +39,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .login-form label, .modal-form label { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
 .login-form input, .modal-form input, .modal-form select, .modal-form textarea { width: 100%; min-height: 45px; margin: 0 0 19px; padding: 0 13px; border: 1px solid #dfe6e1; border-radius: 5px; background: #fff; color: var(--text); }
 .login-form input:focus, .modal-form input:focus, .modal-form select:focus, .modal-form textarea:focus { border-color: var(--green); outline: 0; box-shadow: 0 0 0 3px rgba(23, 107, 80, .09); }
+.password-input-wrap { position: relative; }
+.password-input-wrap input { padding-right: 48px; }
+.password-visibility-button { position: absolute; top: 0; right: 5px; width: 38px; height: 45px; display: grid; place-items: center; margin: 0; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.password-visibility-button:hover { color: var(--green); }
+.password-visibility-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 .button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 0 15px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 160ms ease, border-color 160ms ease, transform 160ms ease; }
 .button:hover { transform: translateY(-1px); }
 .button--primary { background: var(--green); color: #fff; }
