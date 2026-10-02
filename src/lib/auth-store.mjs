@@ -1,5 +1,4 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 
 const passwordBytes = 64;
 const doctorPackages = new Map([['3 months', 3], ['12 months', 12], ['24 months', 24], ['60 Months', 60], ['Lifetime', null]]);
@@ -58,55 +57,76 @@ function validateDoctorProfile({ address, packageName, registerDate, lastRenewal
 }
 
 export class AuthStore {
-  constructor(databasePath) {
-    this.database = new DatabaseSync(databasePath);
-    this.database.exec(`
-      PRAGMA foreign_keys = ON;
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
-        user_id TEXT NOT NULL UNIQUE,
-        display_name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        specialty TEXT NOT NULL DEFAULT '',
-        role TEXT NOT NULL CHECK (role IN ('superadmin', 'doctor')),
-        password_salt TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        must_change_password INTEGER NOT NULL DEFAULT 0,
-        address TEXT NOT NULL DEFAULT '',
-        package_name TEXT NOT NULL DEFAULT '3 months',
-        register_date TEXT NOT NULL DEFAULT '',
-        last_renewal TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE TABLE IF NOT EXISTS sessions (
-        token_hash TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        expires_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+  constructor(pool, tablePrefix = 'docvisit') {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(tablePrefix)) throw new Error('Invalid database table prefix.');
+    this.database = pool;
+    this.usersTable = `${tablePrefix}_users`;
+    this.sessionsTable = `${tablePrefix}_sessions`;
+  }
+
+  async initialize() {
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.usersTable}\` (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        user_id VARCHAR(32) NOT NULL UNIQUE,
+        display_name VARCHAR(120) NOT NULL,
+        email VARCHAR(254) NOT NULL,
+        specialty VARCHAR(120) NOT NULL DEFAULT '',
+        role ENUM('superadmin', 'doctor') NOT NULL,
+        password_salt CHAR(32) NOT NULL,
+        password_hash CHAR(128) NOT NULL,
+        must_change_password TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        address VARCHAR(300) NOT NULL DEFAULT '',
+        package_name VARCHAR(30) NOT NULL DEFAULT '3 months',
+        register_date CHAR(10) NOT NULL DEFAULT '',
+        last_renewal CHAR(10) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.sessionsTable}\` (
+        token_hash CHAR(64) NOT NULL PRIMARY KEY,
+        user_id BIGINT UNSIGNED NOT NULL,
+        expires_at BIGINT UNSIGNED NOT NULL,
+        KEY sessions_expiry (expires_at),
+        CONSTRAINT \`${this.sessionsTable}_user_fk\`
+          FOREIGN KEY (user_id) REFERENCES \`${this.usersTable}\` (id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    const existingColumns = new Set(this.database.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+    const existingColumns = new Set((await this.database.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?`,
+      [this.usersTable],
+    )).map((column) => column.COLUMN_NAME || column.column_name));
     for (const [name, definition] of [
-      ['address', "TEXT NOT NULL DEFAULT ''"],
-      ['package_name', "TEXT NOT NULL DEFAULT '3 months'"],
-      ['register_date', "TEXT NOT NULL DEFAULT ''"],
-      ['last_renewal', "TEXT NOT NULL DEFAULT ''"],
+      ['address', "VARCHAR(300) NOT NULL DEFAULT ''"],
+      ['package_name', "VARCHAR(30) NOT NULL DEFAULT '3 months'"],
+      ['register_date', "CHAR(10) NOT NULL DEFAULT ''"],
+      ['last_renewal', "CHAR(10) NOT NULL DEFAULT ''"],
     ]) {
-      if (!existingColumns.has(name)) this.database.exec(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
+      if (!existingColumns.has(name)) {
+        await this.database.query(`ALTER TABLE \`${this.usersTable}\` ADD COLUMN \`${name}\` ${definition}`);
+      }
     }
-    this.database.exec(`
-      UPDATE users SET register_date = substr(created_at, 1, 10)
-      WHERE role = 'doctor' AND register_date = '';
-      UPDATE users SET last_renewal = register_date
-      WHERE role = 'doctor' AND last_renewal = '';
+    await this.database.query(`
+      UPDATE \`${this.usersTable}\`
+      SET register_date = DATE_FORMAT(created_at, '%Y-%m-%d')
+      WHERE role = 'doctor' AND register_date = ''
+    `);
+    await this.database.query(`
+      UPDATE \`${this.usersTable}\`
+      SET last_renewal = register_date
+      WHERE role = 'doctor' AND last_renewal = ''
     `);
   }
 
-  ensureSuperadmin({ userId, password }) {
-    const existing = this.database.prepare('SELECT id, role FROM users WHERE user_id = ?').get(userId);
-    if (existing) {
-      if (existing.role !== 'superadmin') throw new Error('The configured superadmin ID belongs to a non-admin account.');
+  async ensureSuperadmin({ userId, password }) {
+    const existing = await this.database.query(
+      `SELECT id, role FROM \`${this.usersTable}\` WHERE user_id = ?`,
+      [userId],
+    );
+    if (existing[0]) {
+      if (existing[0].role !== 'superadmin') throw new Error('The configured superadmin ID belongs to a non-admin account.');
       return false;
     }
     if (!userId || !validatePassword(password)) {
@@ -114,71 +134,98 @@ export class AuthStore {
     }
 
     const { salt, hash } = makePasswordHash(password);
-    this.database.prepare(`
-      INSERT INTO users (user_id, display_name, email, role, password_salt, password_hash)
+    await this.database.query(`
+      INSERT INTO \`${this.usersTable}\` (user_id, display_name, email, role, password_salt, password_hash)
       VALUES (?, 'Practice administrator', '', 'superadmin', ?, ?)
-    `).run(userId, salt, hash);
+    `, [userId, salt, hash]);
     return true;
   }
 
-  hasSuperadmin() {
-    return Boolean(this.database.prepare("SELECT 1 FROM users WHERE role = 'superadmin' LIMIT 1").get());
+  async hasSuperadmin() {
+    const rows = await this.database.query(`SELECT 1 FROM \`${this.usersTable}\` WHERE role = 'superadmin' LIMIT 1`);
+    return rows.length > 0;
   }
 
-  authenticate(userId, password) {
+  async authenticate(userId, password) {
     if (typeof userId !== 'string' || typeof password !== 'string') return null;
-    const user = this.database.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    const rows = await this.database.query(`SELECT * FROM \`${this.usersTable}\` WHERE user_id = ?`, [userId]);
+    const user = rows[0];
     if (!user || !verifyPassword(password, user.password_salt, user.password_hash)) return null;
     return publicUser(user);
   }
 
-  createSession(userId, lifetimeSeconds) {
-    const user = this.database.prepare('SELECT id FROM users WHERE user_id = ?').get(userId);
+  async createSession(userId, lifetimeSeconds) {
+    const rows = await this.database.query(`SELECT id FROM \`${this.usersTable}\` WHERE user_id = ?`, [userId]);
+    const user = rows[0];
     if (!user) throw new Error('Account not found.');
     const token = randomBytes(32).toString('base64url');
     const expiresAt = Math.floor(Date.now() / 1000) + lifetimeSeconds;
-    this.database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-      .run(hashToken(token), user.id, expiresAt);
-    this.database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Math.floor(Date.now() / 1000));
+    await this.database.query(
+      `INSERT INTO \`${this.sessionsTable}\` (token_hash, user_id, expires_at) VALUES (?, ?, ?)`,
+      [hashToken(token), user.id, expiresAt],
+    );
+    await this.database.query(`DELETE FROM \`${this.sessionsTable}\` WHERE expires_at <= ?`, [Math.floor(Date.now() / 1000)]);
     return { token, expiresAt };
   }
 
-  getSession(token) {
+  async getSession(token) {
     if (!token) return null;
     const now = Math.floor(Date.now() / 1000);
-    const session = this.database.prepare(`
+    const rows = await this.database.query(`
       SELECT users.*, sessions.expires_at
-      FROM sessions JOIN users ON users.id = sessions.user_id
+      FROM \`${this.sessionsTable}\` AS sessions
+      JOIN \`${this.usersTable}\` AS users ON users.id = sessions.user_id
       WHERE sessions.token_hash = ? AND sessions.expires_at > ?
-    `).get(hashToken(token), now);
-    return session ? { user: publicUser(session), expiresAt: session.expires_at } : null;
+    `, [hashToken(token), now]);
+    const session = rows[0];
+    return session ? { user: publicUser(session), expiresAt: Number(session.expires_at) } : null;
   }
 
-  revokeSession(token) {
-    if (token) this.database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));
+  async revokeSession(token) {
+    if (token) await this.database.query(`DELETE FROM \`${this.sessionsTable}\` WHERE token_hash = ?`, [hashToken(token)]);
   }
 
-  changePassword(token, password) {
+  async changePassword(token, password) {
     if (!validatePassword(password)) throw new Error('Password must be at least 12 characters.');
-    const session = this.database.prepare(`
-      SELECT users.id FROM sessions JOIN users ON users.id = sessions.user_id
-      WHERE sessions.token_hash = ? AND sessions.expires_at > ?
-    `).get(hashToken(token), Math.floor(Date.now() / 1000));
-    if (!session) return null;
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const sessions = await connection.query(`
+        SELECT users.id FROM \`${this.sessionsTable}\` AS sessions
+        JOIN \`${this.usersTable}\` AS users ON users.id = sessions.user_id
+        WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+      `, [hashToken(token), Math.floor(Date.now() / 1000)]);
+      if (!sessions[0]) {
+        await connection.rollback();
+        return null;
+      }
 
-    const { salt, hash } = makePasswordHash(password);
-    this.database.prepare('UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
-      .run(salt, hash, session.id);
-    this.database.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')
-      .run(session.id, hashToken(token));
-    return this.getSession(token)?.user ?? null;
+      const { salt, hash } = makePasswordHash(password);
+      await connection.query(
+        `UPDATE \`${this.usersTable}\` SET password_salt = ?, password_hash = ?, must_change_password = 0 WHERE id = ?`,
+        [salt, hash, sessions[0].id],
+      );
+      await connection.query(
+        `DELETE FROM \`${this.sessionsTable}\` WHERE user_id = ? AND token_hash != ?`,
+        [sessions[0].id, hashToken(token)],
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+    return (await this.getSession(token))?.user ?? null;
   }
 
-  listDoctors() {
-    return this.database.prepare(`
-      SELECT user_id, display_name, email, specialty, address, package_name, register_date, last_renewal, must_change_password, created_at
-      FROM users WHERE role = 'doctor' ORDER BY display_name COLLATE NOCASE
-    `).all().map((doctor) => ({
+  async listDoctors() {
+    const rows = await this.database.query(`
+      SELECT user_id, display_name, email, specialty, address, package_name, register_date, last_renewal, must_change_password,
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+      FROM \`${this.usersTable}\` WHERE role = 'doctor' ORDER BY display_name
+    `);
+    return rows.map((doctor) => ({
       id: doctor.user_id,
       name: doctor.display_name,
       email: doctor.email,
@@ -193,7 +240,7 @@ export class AuthStore {
     }));
   }
 
-  createDoctor({ userId, name, email, specialty, address, packageName, registerDate, lastRenewal }) {
+  async createDoctor({ userId, name, email, specialty, address, packageName, registerDate, lastRenewal }) {
     if (!/^[A-Za-z0-9._-]{3,32}$/.test(userId ?? '')) throw new Error('User ID must be 3 to 32 letters, numbers, dots, underscores, or hyphens.');
     if (typeof name !== 'string' || name.trim().length < 2 || name.length > 120) throw new Error('Enter a valid doctor name.');
     if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) throw new Error('Enter a valid email address.');
@@ -201,42 +248,57 @@ export class AuthStore {
     const profile = validateDoctorProfile({ address, packageName, registerDate, lastRenewal });
     const temporaryPassword = randomBytes(18).toString('base64url');
     const { salt, hash } = makePasswordHash(temporaryPassword);
-    this.database.prepare(`
-      INSERT INTO users (user_id, display_name, email, specialty, role, password_salt, password_hash, must_change_password, address, package_name, register_date, last_renewal)
+    await this.database.query(`
+      INSERT INTO \`${this.usersTable}\` (user_id, display_name, email, specialty, role, password_salt, password_hash, must_change_password, address, package_name, register_date, last_renewal)
       VALUES (?, ?, ?, ?, 'doctor', ?, ?, 1, ?, ?, ?, ?)
-    `).run(userId.trim(), name.trim(), email.trim().toLowerCase(), specialty.trim(), salt, hash, profile.address, profile.packageName, profile.registerDate, profile.lastRenewal);
+    `, [userId.trim(), name.trim(), email.trim().toLowerCase(), specialty.trim(), salt, hash, profile.address, profile.packageName, profile.registerDate, profile.lastRenewal]);
     return { temporaryPassword };
   }
 
-  updateDoctorProfile(userId, profileValues) {
-    const doctor = this.database.prepare("SELECT id FROM users WHERE user_id = ? AND role = 'doctor'").get(userId);
+  async updateDoctorProfile(userId, profileValues) {
+    const doctors = await this.database.query(
+      `SELECT id FROM \`${this.usersTable}\` WHERE user_id = ? AND role = 'doctor'`,
+      [userId],
+    );
+    const doctor = doctors[0];
     if (!doctor) return null;
     const profile = validateDoctorProfile(profileValues);
-    this.database.prepare('UPDATE users SET address = ?, package_name = ?, register_date = ?, last_renewal = ? WHERE id = ?')
-      .run(profile.address, profile.packageName, profile.registerDate, profile.lastRenewal, doctor.id);
-    return this.listDoctors().find((item) => item.id === userId);
+    await this.database.query(
+      `UPDATE \`${this.usersTable}\` SET address = ?, package_name = ?, register_date = ?, last_renewal = ? WHERE id = ?`,
+      [profile.address, profile.packageName, profile.registerDate, profile.lastRenewal, doctor.id],
+    );
+    return (await this.listDoctors()).find((item) => item.id === userId);
   }
 
-  resetDoctorPassword(userId) {
-    const doctor = this.database.prepare("SELECT id FROM users WHERE user_id = ? AND role = 'doctor'").get(userId);
+  async resetDoctorPassword(userId) {
+    const doctors = await this.database.query(
+      `SELECT id FROM \`${this.usersTable}\` WHERE user_id = ? AND role = 'doctor'`,
+      [userId],
+    );
+    const doctor = doctors[0];
     if (!doctor) return null;
 
     const temporaryPassword = randomBytes(18).toString('base64url');
     const { salt, hash } = makePasswordHash(temporaryPassword);
-    this.database.exec('BEGIN IMMEDIATE');
+    const connection = await this.database.getConnection();
     try {
-      this.database.prepare('UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 1 WHERE id = ?')
-        .run(salt, hash, doctor.id);
-      this.database.prepare('DELETE FROM sessions WHERE user_id = ?').run(doctor.id);
-      this.database.exec('COMMIT');
+      await connection.beginTransaction();
+      await connection.query(
+        `UPDATE \`${this.usersTable}\` SET password_salt = ?, password_hash = ?, must_change_password = 1 WHERE id = ?`,
+        [salt, hash, doctor.id],
+      );
+      await connection.query(`DELETE FROM \`${this.sessionsTable}\` WHERE user_id = ?`, [doctor.id]);
+      await connection.commit();
     } catch (error) {
-      this.database.exec('ROLLBACK');
+      await connection.rollback();
       throw error;
+    } finally {
+      connection.release();
     }
     return { temporaryPassword };
   }
 
-  close() {
-    this.database.close();
+  async close() {
+    await this.database.end();
   }
 }

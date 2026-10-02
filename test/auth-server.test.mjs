@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import mariadb from 'mariadb';
 
 const siteDirectory = fileURLToPath(new URL('..', import.meta.url));
+const hasTestDatabaseConfig = Boolean(process.env.MARIADB_TEST_DATABASE && process.env.MARIADB_TEST_USER);
 
 async function unusedPort() {
   const probe = createServer();
@@ -48,17 +47,32 @@ async function api(baseUrl, path, { method = 'GET', body, cookie } = {}) {
   return { response, result, cookie: response.headers.get('set-cookie')?.split(';')[0] || cookie };
 }
 
-test('superadmin provisions doctors who must change temporary passwords', async (context) => {
-  const dataDirectory = await mkdtemp(join(tmpdir(), 'docvisit-auth-'));
+test('superadmin provisions doctors who must change temporary passwords', { skip: !hasTestDatabaseConfig }, async (context) => {
   const port = await unusedPort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const superadminPassword = randomBytes(28).toString('base64url');
+  const tablePrefix = `test_${randomBytes(8).toString('hex')}`;
+  const databaseOptions = {
+    host: process.env.MARIADB_TEST_HOST || '127.0.0.1',
+    port: Number(process.env.MARIADB_TEST_PORT || 3306),
+    database: process.env.MARIADB_TEST_DATABASE,
+    user: process.env.MARIADB_TEST_USER,
+    password: process.env.MARIADB_TEST_PASSWORD || '',
+    connectionLimit: 2,
+  };
+  const pool = mariadb.createPool(databaseOptions);
   const child = spawn(process.execPath, ['--env-file-if-exists=.env.local', 'server.mjs'], {
     cwd: siteDirectory,
     env: {
       ...process.env,
       NODE_ENV: 'test',
-      DATABASE_PATH: join(dataDirectory, 'integration.sqlite'),
+      DB_HOST: databaseOptions.host,
+      DB_PORT: String(databaseOptions.port),
+      DB_NAME: databaseOptions.database,
+      DB_USER: databaseOptions.user,
+      DB_PASSWORD: databaseOptions.password,
+      DB_TABLE_PREFIX: tablePrefix,
+      SUPERADMIN_PASSWORD: '',
       PORT: String(port),
       SERVER_HOST: '127.0.0.1',
     },
@@ -71,7 +85,9 @@ test('superadmin provisions doctors who must change temporary passwords', async 
         child.kill();
       });
     }
-    await rm(dataDirectory, { recursive: true, force: true });
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_sessions\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_users\``);
+    await pool.end();
   });
   await waitUntilReady(child, baseUrl);
 

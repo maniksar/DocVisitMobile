@@ -1,20 +1,53 @@
-import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import mariadb from 'mariadb';
 import { AuthStore, validatePassword } from './src/lib/auth-store.mjs';
 
 const siteDirectory = dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(await (await import('node:fs/promises')).readFile(resolve(siteDirectory, 'server.config.json'), 'utf8'));
-const databasePath = resolve(siteDirectory, process.env.DATABASE_PATH || config.databasePath);
-const databaseDirectory = dirname(databasePath);
-if (!existsSync(databaseDirectory)) mkdirSync(databaseDirectory, { recursive: true });
-
-const store = new AuthStore(databasePath);
-if (process.env.SUPERADMIN_PASSWORD) {
-  store.ensureSuperadmin({ userId: config.superadminUserId, password: process.env.SUPERADMIN_PASSWORD });
-} else if (!store.hasSuperadmin() && process.env.NODE_ENV === 'production') {
-  throw new Error('Set SUPERADMIN_PASSWORD before first production startup.');
+const requiredDatabaseSettings = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+const missingDatabaseSettings = requiredDatabaseSettings.filter((name) => !process.env[name]);
+if (missingDatabaseSettings.length) {
+  throw new Error(`Set the MariaDB connection settings: ${missingDatabaseSettings.join(', ')}.`);
+}
+const databasePort = Number(process.env.DB_PORT || 3306);
+if (!Number.isInteger(databasePort) || databasePort < 1 || databasePort > 65535) {
+  throw new Error('DB_PORT must be a valid TCP port.');
+}
+const databaseConnectionLimit = Number(process.env.DB_CONNECTION_LIMIT || 5);
+if (!Number.isInteger(databaseConnectionLimit) || databaseConnectionLimit < 1) {
+  throw new Error('DB_CONNECTION_LIMIT must be a positive integer.');
+}
+const database = mariadb.createPool({
+  host: process.env.DB_HOST,
+  port: databasePort,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  connectionLimit: databaseConnectionLimit,
+  charset: 'utf8mb4',
+  ...(process.env.DB_SSL === 'true' ? {
+    ssl: { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' },
+  } : {}),
+});
+const store = new AuthStore(database, process.env.DB_TABLE_PREFIX || 'docvisit');
+try {
+  await store.initialize();
+} catch (error) {
+  await database.end();
+  throw new Error('Could not connect to MariaDB or initialize the DocVisitMobile schema.', { cause: error });
+}
+try {
+  if (process.env.SUPERADMIN_PASSWORD) {
+    await store.ensureSuperadmin({ userId: config.superadminUserId, password: process.env.SUPERADMIN_PASSWORD });
+  } else if (!await store.hasSuperadmin() && process.env.NODE_ENV === 'production') {
+    throw new Error('Set SUPERADMIN_PASSWORD before first production startup.');
+  }
+} catch (error) {
+  await store.close();
+  throw error;
 }
 
 const distDirectory = resolve(siteDirectory, 'dist');
@@ -75,8 +108,8 @@ function sessionCookie(token, maxAge) {
   return `${cookieName}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAge}${secure}`;
 }
 
-function requestUser(request) {
-  const session = store.getSession(readSessionToken(request));
+async function requestUser(request) {
+  const session = await store.getSession(readSessionToken(request));
   return session ? { ...session, token: readSessionToken(request) } : null;
 }
 
@@ -131,7 +164,7 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === 'GET' && url.pathname === '/api/setup/status') {
-      sendJson(response, 200, { required: !store.hasSuperadmin(), userId: config.superadminUserId });
+      sendJson(response, 200, { required: !await store.hasSuperadmin(), userId: config.superadminUserId });
       return;
     }
 
@@ -140,7 +173,7 @@ const server = createServer(async (request, response) => {
         sendJson(response, 403, { error: 'Initial setup is only available from this computer.' });
         return;
       }
-      if (store.hasSuperadmin()) {
+      if (await store.hasSuperadmin()) {
         sendJson(response, 409, { error: 'Superadmin setup has already been completed.' });
         return;
       }
@@ -150,13 +183,13 @@ const server = createServer(async (request, response) => {
         return;
       }
       try {
-        store.ensureSuperadmin({ userId: config.superadminUserId, password: body.password });
+        await store.ensureSuperadmin({ userId: config.superadminUserId, password: body.password });
       } catch (error) {
         sendJson(response, 400, { error: error.message });
         return;
       }
-      const session = store.createSession(config.superadminUserId, config.sessionLifetimeSeconds);
-      sendJson(response, 201, { user: store.authenticate(config.superadminUserId, body.password) }, { 'Set-Cookie': sessionCookie(session.token, config.sessionLifetimeSeconds) });
+      const session = await store.createSession(config.superadminUserId, config.sessionLifetimeSeconds);
+      sendJson(response, 201, { user: await store.authenticate(config.superadminUserId, body.password) }, { 'Set-Cookie': sessionCookie(session.token, config.sessionLifetimeSeconds) });
       return;
     }
 
@@ -170,7 +203,7 @@ const server = createServer(async (request, response) => {
       }
 
       const body = await readJson(request);
-      const user = store.authenticate(String(body.userId || ''), String(body.password || ''));
+      const user = await store.authenticate(String(body.userId || ''), String(body.password || ''));
       if (!user) {
         const current = attempt && now - attempt.startedAt < 15 * 60 * 1000 ? attempt : { count: 0, startedAt: now };
         current.count += 1;
@@ -181,13 +214,13 @@ const server = createServer(async (request, response) => {
       }
 
       attemptsByAddress.delete(address);
-      const session = store.createSession(user.id, config.sessionLifetimeSeconds);
+      const session = await store.createSession(user.id, config.sessionLifetimeSeconds);
       sendJson(response, 200, { user }, { 'Set-Cookie': sessionCookie(session.token, config.sessionLifetimeSeconds) });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/auth/me') {
-      const session = requestUser(request);
+      const session = await requestUser(request);
       if (!session) {
         sendJson(response, 401, { error: 'Sign in required.' });
         return;
@@ -197,7 +230,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/password') {
-      const session = requestUser(request);
+      const session = await requestUser(request);
       if (!session) {
         sendJson(response, 401, { error: 'Sign in required.' });
         return;
@@ -211,7 +244,7 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: 'Passwords do not match.' });
         return;
       }
-      const user = store.changePassword(session.token, body.password);
+      const user = await store.changePassword(session.token, body.password);
       if (!user) {
         sendJson(response, 401, { error: 'Sign in required.' });
         return;
@@ -221,14 +254,14 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
-      store.revokeSession(readSessionToken(request));
+      await store.revokeSession(readSessionToken(request));
       sendJson(response, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', 0) });
       return;
     }
 
     const resetDoctorMatch = url.pathname.match(/^\/api\/admin\/doctors\/([^/]+)\/reset-password$/);
     if (request.method === 'POST' && resetDoctorMatch) {
-      const session = requestUser(request);
+      const session = await requestUser(request);
       if (!session || session.user.role !== 'superadmin') {
         sendJson(response, 403, { error: 'Superadmin access required.' });
         return;
@@ -240,19 +273,19 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: 'Invalid doctor user ID.' });
         return;
       }
-      const reset = store.resetDoctorPassword(userId);
+      const reset = await store.resetDoctorPassword(userId);
       if (!reset) {
         sendJson(response, 404, { error: 'Doctor account not found.' });
         return;
       }
-      const doctor = store.listDoctors().find((item) => item.id === userId);
+      const doctor = (await store.listDoctors()).find((item) => item.id === userId);
       sendJson(response, 200, { doctor, temporaryPassword: reset.temporaryPassword });
       return;
     }
 
     const doctorProfileMatch = url.pathname.match(/^\/api\/admin\/doctors\/([^/]+)\/profile$/);
     if (request.method === 'PUT' && doctorProfileMatch) {
-      const session = requestUser(request);
+      const session = await requestUser(request);
       if (!session || session.user.role !== 'superadmin') {
         sendJson(response, 403, { error: 'Superadmin access required.' });
         return;
@@ -266,35 +299,37 @@ const server = createServer(async (request, response) => {
       }
       const body = await readJson(request);
       try {
-        const doctor = store.updateDoctorProfile(userId, body);
+        const doctor = await store.updateDoctorProfile(userId, body);
         if (!doctor) {
           sendJson(response, 404, { error: 'Doctor account not found.' });
           return;
         }
         sendJson(response, 200, { doctor });
       } catch (error) {
+        if (error.code) throw error;
         sendJson(response, 400, { error: error.message });
       }
       return;
     }
 
     if (url.pathname === '/api/admin/doctors') {
-      const session = requestUser(request);
+      const session = await requestUser(request);
       if (!session || session.user.role !== 'superadmin') {
         sendJson(response, 403, { error: 'Superadmin access required.' });
         return;
       }
       if (request.method === 'GET') {
-        sendJson(response, 200, { doctors: store.listDoctors() });
+        sendJson(response, 200, { doctors: await store.listDoctors() });
         return;
       }
       if (request.method === 'POST') {
         const body = await readJson(request);
         try {
-          const doctor = store.createDoctor(body);
+          const doctor = await store.createDoctor(body);
           sendJson(response, 201, { doctor: { id: body.userId, name: body.name, email: body.email, specialty: body.specialty }, temporaryPassword: doctor.temporaryPassword });
         } catch (error) {
-          const duplicate = String(error.message).includes('UNIQUE constraint failed');
+          if (error.code && error.code !== 'ER_DUP_ENTRY') throw error;
+          const duplicate = error.code === 'ER_DUP_ENTRY';
           sendJson(response, duplicate ? 409 : 400, { error: duplicate ? 'That user ID is already in use.' : error.message });
         }
         return;
@@ -317,5 +352,8 @@ server.listen(port, host, () => {
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => server.close(() => { store.close(); process.exit(0); }));
+  process.on(signal, () => server.close(async () => {
+    await store.close();
+    process.exit(0);
+  }));
 }

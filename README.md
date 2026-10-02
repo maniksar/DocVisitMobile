@@ -1,7 +1,7 @@
 # DocVisitMobile
 
-DocVisitMobile is a standalone, installable PWA clone of DocVisit. It keeps its
-own SQLite authentication database and browser-side demo record stores; it does
+DocVisitMobile is a standalone, installable PWA clone of DocVisit. It uses a
+MariaDB database for authentication and browser-side demo record stores; it does
 not share the original app's local data.
 
 ## Run locally
@@ -17,6 +17,11 @@ superadmin password from the same computer, then sign in and create doctor
 accounts as needed. The first-run setup endpoint is intentionally restricted to
 loopback connections.
 
+Create a MariaDB database and user, then configure `DB_HOST`, `DB_PORT`,
+`DB_NAME`, `DB_USER`, and `DB_PASSWORD` in `.env.local`. The app creates its
+`docvisit_users` and `docvisit_sessions` tables on startup. Never commit
+`.env.local` or put database credentials in source control.
+
 ## Hostinger deployment
 
 Use a Hostinger Node.js-capable hosting plan (or VPS) with Node.js 22.12 or
@@ -26,16 +31,27 @@ command, `npm run build` as the build command, and `npm start` as the start
 command. Set these server-side environment variables in Hostinger:
 
 - `NODE_ENV=production`
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` for the
+  MariaDB database and user created in Hostinger hPanel.
+- `DB_SSL=true` if the MariaDB provider requires TLS. Keep certificate
+  verification enabled unless the provider explicitly requires otherwise.
 - `SUPERADMIN_PASSWORD` to a unique, randomly generated password of at least
   12 characters. Enter it only in Hostinger's environment-variable settings,
   never in Git or chat. It is used to create the initial `maniksar` admin when
   the app starts against an empty database.
-- `DATABASE_PATH` to a writable persistent path if the platform does not
-  preserve the default `data/docvisitmobile.sqlite` between deployments.
+- `DB_TABLE_PREFIX` to a different alphanumeric/underscore prefix if this
+  MariaDB database is shared with another app. The default is `docvisit`.
 
-The app binds to `0.0.0.0` in production and honors Hostinger's `PORT`
-environment variable. Attach `mypatients.in` to the app in hPanel and enable
-Hostinger SSL before sharing the site.
+The app creates the prefixed MariaDB tables when it starts, binds to `0.0.0.0`
+in production, and honors Hostinger's `PORT` environment variable. Attach
+`mypatients.in` to the app in hPanel and enable Hostinger SSL before sharing
+the site. The old SQLite authentication data, if any, is not imported
+automatically; provision accounts again after deployment.
+
+For integration tests, provide a dedicated, disposable MariaDB test database
+with `MARIADB_TEST_HOST`, `MARIADB_TEST_PORT`, `MARIADB_TEST_DATABASE`,
+`MARIADB_TEST_USER`, and `MARIADB_TEST_PASSWORD`. The test suite creates and
+drops uniquely prefixed tables in that database.
 
 **Prototype only:** patient, appointment, and prescription records currently
 live in each browser's local storage; the app does not provide a secure,

@@ -7,9 +7,9 @@ The local app bootstraps one superadmin account. The user ID is `maniksar`, conf
 3. Sign in with user ID `maniksar` and the password chosen during setup.
 4. Create doctor profiles from **Doctors**. Each account receives a random temporary password shown once. The doctor must change it before entering the workspace.
 
-For scripted or production bootstrap, set `SUPERADMIN_PASSWORD` in the server environment before first startup. `.env.local` is ignored by Git; `.env.example` is only a template.
+For scripted or production bootstrap, set `SUPERADMIN_PASSWORD` in the server environment before first startup. Configure the MariaDB connection with `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`. `.env.local` is ignored by Git; `.env.example` is only a template.
 
-`.env.local` and the SQLite database are excluded from Git. The server hashes passwords with scrypt, stores only hashes of session tokens, uses HttpOnly same-site cookies, and expires sessions after 12 hours.
+`.env.local` is excluded from Git. The server stores users and sessions in MariaDB, hashes passwords with scrypt, stores only hashes of session tokens, uses HttpOnly same-site cookies, and expires sessions after 12 hours. Configure the `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` environment variables before starting the server.
 
 This is a local prototype, not a production clinical system. Patient, appointment, and prescription records in the current UI remain sample data in browser storage. Before using real patient information, move all records behind authenticated server APIs, use HTTPS and a managed database, add backups and audit logging, and complete the applicable privacy and security review.
 
