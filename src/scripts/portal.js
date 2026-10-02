@@ -268,7 +268,7 @@ function render() {
   document.querySelectorAll('[data-doctor-only]').forEach((element) => {
     element.hidden = isAdmin && !(isDoctorPreview && ['patients', 'patient-history'].includes(element.dataset.panel));
   });
-  byId('metric-grid').hidden = currentView === 'patient-history';
+  byId('metric-grid').hidden = currentUser?.role !== 'doctor' || currentView === 'patient-history';
   document.querySelectorAll('[data-admin-only]').forEach((element) => { element.hidden = !isAdmin; });
   byId('return-to-doctors').hidden = !isDoctorPreview;
   byId('return-to-patients').hidden = currentView !== 'patient-history';
