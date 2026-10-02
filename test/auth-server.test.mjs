@@ -59,7 +59,7 @@ test('superadmin provisions doctors who must change temporary passwords', async 
       ...process.env,
       NODE_ENV: 'test',
       DATABASE_PATH: join(dataDirectory, 'integration.sqlite'),
-      SERVER_PORT: String(port),
+      PORT: String(port),
       SERVER_HOST: '127.0.0.1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

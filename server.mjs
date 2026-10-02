@@ -308,8 +308,8 @@ const server = createServer(async (request, response) => {
   }
 });
 
-const host = process.env.SERVER_HOST || config.host;
-const port = Number(process.env.SERVER_PORT || config.port);
+const host = process.env.SERVER_HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : config.host);
+const port = Number(process.env.PORT || process.env.SERVER_PORT || config.port);
 server.listen(port, host, () => {
   console.log(`DocVisitMobile running at http://${host}:${port}`);
   console.log(`Superadmin user ID: ${config.superadminUserId}`);
