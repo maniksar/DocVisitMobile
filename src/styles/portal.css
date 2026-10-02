@@ -205,8 +205,9 @@ td:first-child { color: var(--text); }
 .patient-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 5px; background: #fff; box-shadow: var(--shadow-soft); }
 .patient-card-top { display: flex; align-items: center; gap: 10px; }
 .patient-card-top > span:nth-child(2) { min-width: 0; flex: 1; }
-.patient-history-button { width: 30px; height: 30px; flex: none; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--green); font-size: 15px; }
-.patient-history-button:hover { border-color: #cbd8d0; background: var(--green-soft); }
+.patient-card-actions { display: flex; flex: none; gap: 5px; }
+.patient-edit-button, .patient-history-button { width: 30px; height: 30px; flex: none; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--green); font-size: 15px; }
+.patient-edit-button:hover, .patient-history-button:hover { border-color: #cbd8d0; background: var(--green-soft); }
 .create-patient-button:hover { border-color: #cbd8d0; background: var(--green-soft); }
 .patient-list-identity { display: flex; align-items: center; gap: 8px; }
 .patient-card-top strong { display: block; font-size: 11px; font-weight: 600; }
@@ -215,7 +216,8 @@ td:first-child { color: var(--text); }
 .patient-detail .patient-address { grid-column: 1 / -1; }
 .patient-detail span { display: block; color: var(--muted); font-size: 8px; }
 .patient-detail strong { display: block; margin-top: 4px; color: #47574e; font-size: 9px; font-weight: 500; }
-.patient-list-surface table { min-width: 820px; }
+.patient-list-surface table { min-width: 1040px; }
+.patient-storage-error { margin: 0 0 14px; color: #b43f34; font-size: 12px; }
 .patient-list-surface td { font-size: 9px; }
 .patient-list-surface td:first-child { white-space: normal; }
 .appointment-patient-picker { grid-column: span 2; display: flex; align-items: flex-start; gap: 8px; margin-bottom: 14px; }

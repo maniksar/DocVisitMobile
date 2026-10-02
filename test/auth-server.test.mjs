@@ -85,6 +85,11 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
         child.kill();
       });
     }
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_prescription_attachments\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_prescriptions\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_appointments\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_patients\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_doctors\``);
     await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_sessions\``);
     await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_users\``);
     await pool.end();
@@ -175,6 +180,70 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
   });
   assert.equal(doctorLogin.response.status, 200);
   assert.equal(doctorLogin.result.user.mustChangePassword, false);
+
+  const patientInput = {
+    name: 'Jamie Example', gender: 'Female', age: '34', address: '45 Sample Lane',
+    email: 'jamie@example.test', phone: '555-0123', birthDate: '1992-04-05',
+  };
+  const createdPatient = await api(baseUrl, '/api/patients', {
+    method: 'POST',
+    cookie: doctorLogin.cookie,
+    body: patientInput,
+  });
+  assert.equal(createdPatient.response.status, 201);
+  assert.equal(createdPatient.result.patient.name, patientInput.name);
+  assert.equal(createdPatient.result.patient.gender, patientInput.gender);
+  assert.equal(createdPatient.result.patient.age, 34);
+  assert.equal(createdPatient.result.patient.doctorId, 'doctor-ava');
+  assert.equal(typeof createdPatient.result.patient.id, 'string');
+
+  const updatedPatient = await api(baseUrl, `/api/patients/${encodeURIComponent(createdPatient.result.patient.id)}`, {
+    method: 'PUT',
+    cookie: doctorLogin.cookie,
+    body: { ...patientInput, name: 'Jamie Updated', gender: 'Male', age: '35' },
+  });
+  assert.equal(updatedPatient.response.status, 200);
+  assert.equal(updatedPatient.result.patient.name, 'Jamie Updated');
+  assert.equal(updatedPatient.result.patient.gender, 'Male');
+  assert.equal(updatedPatient.result.patient.age, 35);
+  const missingPatient = await api(baseUrl, '/api/patients/not-owned-by-this-doctor', {
+    method: 'PUT',
+    cookie: doctorLogin.cookie,
+    body: patientInput,
+  });
+  assert.equal(missingPatient.response.status, 404);
+
+  const patients = await api(baseUrl, '/api/patients', { cookie: doctorLogin.cookie });
+  assert.equal(patients.response.status, 200);
+  assert.ok(patients.result.patients.some((patient) => patient.id === createdPatient.result.patient.id && patient.name === 'Jamie Updated'));
+  const invalidPatient = await api(baseUrl, '/api/patients', {
+    method: 'POST',
+    cookie: doctorLogin.cookie,
+    body: { ...patientInput, gender: 'Other' },
+  });
+  assert.equal(invalidPatient.response.status, 400);
+
+  const patientWithoutOptionalFields = await api(baseUrl, '/api/patients', {
+    method: 'POST',
+    cookie: doctorLogin.cookie,
+    body: { name: 'Casey Optional', gender: 'Female', age: '28' },
+  });
+  assert.equal(patientWithoutOptionalFields.response.status, 201);
+  assert.equal(patientWithoutOptionalFields.result.patient.address, '');
+  assert.equal(patientWithoutOptionalFields.result.patient.email, '');
+  assert.equal(patientWithoutOptionalFields.result.patient.phone, '');
+  assert.equal(patientWithoutOptionalFields.result.patient.birthDate, '');
+
+  const clearedOptionalFields = await api(baseUrl, `/api/patients/${encodeURIComponent(createdPatient.result.patient.id)}`, {
+    method: 'PUT',
+    cookie: doctorLogin.cookie,
+    body: { name: 'Jamie Updated', gender: 'Male', age: '35', address: '', email: '', phone: '', birthDate: '' },
+  });
+  assert.equal(clearedOptionalFields.response.status, 200);
+  assert.equal(clearedOptionalFields.result.patient.address, '');
+  assert.equal(clearedOptionalFields.result.patient.email, '');
+  assert.equal(clearedOptionalFields.result.patient.phone, '');
+  assert.equal(clearedOptionalFields.result.patient.birthDate, '');
 
   const deniedReset = await api(baseUrl, '/api/admin/doctors/doctor-ava/reset-password', {
     method: 'POST',

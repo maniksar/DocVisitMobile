@@ -259,6 +259,63 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/patients') {
+      const session = await requestUser(request);
+      if (!session) {
+        sendJson(response, 401, { error: 'Sign in required.' });
+        return;
+      }
+      if (request.method === 'GET') {
+        const doctorId = session.user.role === 'doctor' ? session.user.id : null;
+        sendJson(response, 200, { patients: await store.listPatients(doctorId) });
+        return;
+      }
+      if (request.method === 'POST') {
+        if (session.user.role !== 'doctor') {
+          sendJson(response, 403, { error: 'Doctor access required to add a patient.' });
+          return;
+        }
+        const body = await readJson(request);
+        try {
+          const patient = await store.createPatient(session.user.id, body);
+          sendJson(response, 201, { patient });
+        } catch (error) {
+          if (error.code) throw error;
+          sendJson(response, 400, { error: error.message });
+        }
+        return;
+      }
+    }
+
+    const patientMatch = url.pathname.match(/^\/api\/patients\/([^/]+)$/);
+    if (request.method === 'PUT' && patientMatch) {
+      const session = await requestUser(request);
+      if (!session || session.user.role !== 'doctor') {
+        sendJson(response, 403, { error: 'Doctor access required to edit a patient.' });
+        return;
+      }
+      let patientId;
+      try {
+        patientId = decodeURIComponent(patientMatch[1]);
+      } catch {
+        sendJson(response, 400, { error: 'Invalid patient ID.' });
+        return;
+      }
+      const body = await readJson(request);
+      try {
+        const patient = await store.updatePatient(session.user.id, patientId, body);
+        if (!patient) {
+          sendJson(response, 404, { error: 'Patient not found.' });
+          return;
+        }
+        sendJson(response, 200, { patient });
+      } catch (error) {
+        if (error.code) throw error;
+        sendJson(response, 400, { error: error.message });
+      }
+      return;
+    }
+
     const resetDoctorMatch = url.pathname.match(/^\/api\/admin\/doctors\/([^/]+)\/reset-password$/);
     if (request.method === 'POST' && resetDoctorMatch) {
       const session = await requestUser(request);

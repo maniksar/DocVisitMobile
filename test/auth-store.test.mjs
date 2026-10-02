@@ -20,12 +20,20 @@ let tablePrefix;
 
 afterEach(async () => {
   if (!pool) return;
-  await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_sessions\``);
-  await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_users\``);
-  await pool.end();
-  store = undefined;
-  pool = undefined;
-  tablePrefix = undefined;
+  try {
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_prescription_attachments\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_prescriptions\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_appointments\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_patients\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_doctors\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_sessions\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_users\``);
+  } finally {
+    await pool.end();
+    store = undefined;
+    pool = undefined;
+    tablePrefix = undefined;
+  }
 });
 
 async function createStore() {
@@ -108,6 +116,17 @@ test('MariaDB schema uses isolated InnoDB tables and rejects unsafe prefixes', a
   assert.match(statements[0], /ENGINE=InnoDB/);
   assert.match(statements[1], /`unit_test_sessions`/);
   assert.match(statements[1], /FOREIGN KEY \(user_id\)/);
+  assert.ok(statements.some((sql) => sql.includes('`unit_test_doctors`')));
+  assert.ok(statements.some((sql) => sql.includes('`unit_test_patients`')));
+  assert.ok(statements.some((sql) => sql.includes('`unit_test_appointments`')));
+  assert.ok(statements.some((sql) => sql.includes('`unit_test_prescriptions`')));
+  assert.ok(statements.some((sql) => sql.includes('`unit_test_prescription_attachments`')));
+  assert.ok(statements.some((sql) => sql.includes('PatientId VARCHAR(64)')));
+  assert.ok(statements.some((sql) => sql.includes("gender ENUM('Male', 'Female')")));
+  assert.ok(statements.some((sql) => sql.includes('age TINYINT UNSIGNED')));
+  assert.ok(statements.some((sql) => sql.includes('AppointId VARCHAR(64)')));
+  assert.ok(statements.some((sql) => sql.includes('MedicationId VARCHAR(64)')));
+  assert.ok(statements.some((sql) => sql.includes('AttachId VARCHAR(255)')));
   assert.ok(statements.some((sql) => sql.includes('information_schema.columns')));
   assert.throws(() => new AuthStore(fakePool, 'unsafe`prefix'), /Invalid database table prefix/);
 });

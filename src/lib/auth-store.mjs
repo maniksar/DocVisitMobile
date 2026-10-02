@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const passwordBytes = 64;
 const doctorPackages = new Map([['3 months', 3], ['12 months', 12], ['24 months', 24], ['60 Months', 60], ['Lifetime', null]]);
@@ -56,12 +56,43 @@ function validateDoctorProfile({ address, packageName, registerDate, lastRenewal
   return { address: address.trim(), packageName, registerDate, lastRenewal };
 }
 
+function validatePatient({ name, gender, age, address, email, phone, birthDate }) {
+  const displayName = typeof name === 'string' ? name.trim() : '';
+  const patientAge = typeof age === 'string' && age.trim() !== '' ? Number(age) : age;
+  const optionalText = (value, label, maxLength) => {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string') throw new Error(`Enter a valid ${label}.`);
+    const normalized = value.trim();
+    if (!normalized) return null;
+    if (normalized.length > maxLength) throw new Error(`Enter a valid ${label}.`);
+    return normalized;
+  };
+  const patientAddress = optionalText(address, 'address or locality', 300);
+  const patientEmail = optionalText(email, 'email address', 254)?.toLowerCase() ?? null;
+  const patientPhone = optionalText(phone, 'phone number', 40);
+  const patientBirthDate = optionalText(birthDate, 'date of birth', 10);
+  if (displayName.length < 2 || displayName.length > 120) throw new Error('Enter a valid patient name.');
+  if (gender !== 'Male' && gender !== 'Female') throw new Error('Choose Male or Female for gender.');
+  if (!Number.isInteger(patientAge) || patientAge < 0 || patientAge > 130) throw new Error('Enter an age between 0 and 130.');
+  if (patientAddress !== null && patientAddress.length < 2) throw new Error('Enter a valid address or locality.');
+  if (patientEmail !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(patientEmail)) throw new Error('Enter a valid email address.');
+  if (patientPhone !== null && patientPhone.length < 3) throw new Error('Enter a valid phone number.');
+  if (patientBirthDate !== null && !isValidDate(patientBirthDate)) throw new Error('Enter a valid date of birth.');
+  return { name: displayName, gender, age: patientAge, address: patientAddress, email: patientEmail, phone: patientPhone, birthDate: patientBirthDate };
+}
+
 export class AuthStore {
   constructor(pool, tablePrefix = 'docvisit') {
     if (!/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(tablePrefix)) throw new Error('Invalid database table prefix.');
     this.database = pool;
+    this.tablePrefix = tablePrefix;
     this.usersTable = `${tablePrefix}_users`;
     this.sessionsTable = `${tablePrefix}_sessions`;
+    this.doctorsTable = `${tablePrefix}_doctors`;
+    this.patientsTable = `${tablePrefix}_patients`;
+    this.appointmentsTable = `${tablePrefix}_appointments`;
+    this.prescriptionsTable = `${tablePrefix}_prescriptions`;
+    this.attachmentsTable = `${tablePrefix}_prescription_attachments`;
   }
 
   async initialize() {
@@ -85,15 +116,116 @@ export class AuthStore {
     `);
     await this.database.query(`
       CREATE TABLE IF NOT EXISTS \`${this.sessionsTable}\` (
-        token_hash CHAR(64) NOT NULL PRIMARY KEY,
+        Id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        token_hash CHAR(64) NOT NULL,
         user_id BIGINT UNSIGNED NOT NULL,
         expires_at BIGINT UNSIGNED NOT NULL,
+        UNIQUE KEY sessions_token_hash (token_hash),
         KEY sessions_expiry (expires_at),
         CONSTRAINT \`${this.sessionsTable}_user_fk\`
           FOREIGN KEY (user_id) REFERENCES \`${this.usersTable}\` (id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.doctorsTable}\` (
+        DoctorId VARCHAR(32) NOT NULL,
+        specialty VARCHAR(120) NOT NULL DEFAULT '',
+        address VARCHAR(300) NOT NULL DEFAULT '',
+        package_name VARCHAR(30) NOT NULL DEFAULT '3 months',
+        register_date CHAR(10) NOT NULL DEFAULT '',
+        last_renewal CHAR(10) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (DoctorId),
+        CONSTRAINT \`${this.doctorsTable}_user_fk\`
+          FOREIGN KEY (DoctorId) REFERENCES \`${this.usersTable}\` (user_id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.patientsTable}\` (
+        PatientId VARCHAR(64) NOT NULL,
+        doctor_user_id VARCHAR(32) NULL,
+        display_name VARCHAR(120) NOT NULL,
+        gender ENUM('Male', 'Female') NOT NULL,
+        age TINYINT UNSIGNED NOT NULL,
+        address VARCHAR(300) NULL,
+        email VARCHAR(254) NULL,
+        phone VARCHAR(40) NULL,
+        birth_date DATE NULL,
+        last_visit DATE NULL,
+        initials VARCHAR(4) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (PatientId),
+        KEY patients_doctor_name (doctor_user_id, display_name),
+        KEY patients_email (email),
+        CONSTRAINT \`${this.patientsTable}_doctor_fk\`
+          FOREIGN KEY (doctor_user_id) REFERENCES \`${this.doctorsTable}\` (DoctorId) ON DELETE RESTRICT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.appointmentsTable}\` (
+        AppointId VARCHAR(64) NOT NULL,
+        doctor_user_id VARCHAR(32) NOT NULL,
+        patient_id VARCHAR(64) NOT NULL,
+        appointment_date DATE NOT NULL,
+        appointment_time TIME NOT NULL,
+        visit_type VARCHAR(80) NOT NULL,
+        room VARCHAR(40) NOT NULL DEFAULT '',
+        status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (AppointId),
+        KEY appointments_doctor_schedule (doctor_user_id, appointment_date, appointment_time),
+        KEY appointments_patient_history (patient_id, appointment_date),
+        CONSTRAINT \`${this.appointmentsTable}_doctor_fk\`
+          FOREIGN KEY (doctor_user_id) REFERENCES \`${this.doctorsTable}\` (DoctorId) ON DELETE RESTRICT,
+        CONSTRAINT \`${this.appointmentsTable}_patient_fk\`
+          FOREIGN KEY (patient_id) REFERENCES \`${this.patientsTable}\` (PatientId) ON DELETE RESTRICT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.prescriptionsTable}\` (
+        MedicationId VARCHAR(64) NOT NULL,
+        doctor_user_id VARCHAR(32) NOT NULL,
+        patient_id VARCHAR(64) NOT NULL,
+        appointment_id VARCHAR(64) NULL,
+        medication VARCHAR(200) NOT NULL,
+        directions VARCHAR(500) NOT NULL,
+        refills TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        status VARCHAR(32) NOT NULL DEFAULT 'Active',
+        review_date DATE NOT NULL,
+        notes TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (MedicationId),
+        KEY prescriptions_doctor_status (doctor_user_id, status, review_date),
+        KEY prescriptions_patient_history (patient_id, created_at),
+        KEY prescriptions_appointment (appointment_id),
+        CONSTRAINT \`${this.prescriptionsTable}_doctor_fk\`
+          FOREIGN KEY (doctor_user_id) REFERENCES \`${this.doctorsTable}\` (DoctorId) ON DELETE RESTRICT,
+        CONSTRAINT \`${this.prescriptionsTable}_patient_fk\`
+          FOREIGN KEY (patient_id) REFERENCES \`${this.patientsTable}\` (PatientId) ON DELETE RESTRICT,
+        CONSTRAINT \`${this.prescriptionsTable}_appointment_fk\`
+          FOREIGN KEY (appointment_id) REFERENCES \`${this.appointmentsTable}\` (AppointId) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await this.database.query(`
+      CREATE TABLE IF NOT EXISTS \`${this.attachmentsTable}\` (
+        AttachId VARCHAR(255) NOT NULL,
+        prescription_id VARCHAR(64) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        content_type VARCHAR(127) NOT NULL,
+        file_size INT UNSIGNED NOT NULL,
+        file_data LONGBLOB NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (AttachId),
+        KEY attachments_prescription (prescription_id),
+        CONSTRAINT \`${this.tablePrefix}_attachment_rx_fk\`
+          FOREIGN KEY (prescription_id) REFERENCES \`${this.prescriptionsTable}\` (MedicationId) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 
+    await this.migrateClinicalPrimaryKeys();
     const existingColumns = new Set((await this.database.query(
       `SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?`,
       [this.usersTable],
@@ -118,6 +250,164 @@ export class AuthStore {
       SET last_renewal = register_date
       WHERE role = 'doctor' AND last_renewal = ''
     `);
+    await this.database.query(`
+      INSERT IGNORE INTO \`${this.doctorsTable}\`
+        (DoctorId, specialty, address, package_name, register_date, last_renewal)
+      SELECT user_id, specialty, address, package_name, register_date, last_renewal
+      FROM \`${this.usersTable}\` WHERE role = 'doctor'
+    `);
+  }
+
+  async migrateClinicalPrimaryKeys() {
+    const columnsByTable = new Map();
+    for (const table of [this.sessionsTable, this.doctorsTable, this.patientsTable, this.appointmentsTable, this.prescriptionsTable, this.attachmentsTable]) {
+      const columns = await this.database.query(
+        'SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?',
+        [table],
+      );
+      columnsByTable.set(table, new Set(columns.map((column) => column.COLUMN_NAME || column.column_name)));
+    }
+    const migrationColumns = [
+      [this.sessionsTable, 'Id', 'BIGINT UNSIGNED', null],
+      [this.doctorsTable, 'DoctorId', 'VARCHAR(32)', 'user_id'],
+      [this.patientsTable, 'PatientId', 'VARCHAR(64)', 'id'],
+      [this.appointmentsTable, 'AppointId', 'VARCHAR(64)', 'id'],
+      [this.prescriptionsTable, 'MedicationId', 'VARCHAR(64)', 'id'],
+      [this.attachmentsTable, 'AttachId', 'VARCHAR(255)', 'id'],
+    ];
+    const pending = migrationColumns.filter(([table, column]) => !columnsByTable.get(table).has(column));
+    if (pending.length) {
+      for (const table of [this.sessionsTable, this.doctorsTable, this.patientsTable, this.appointmentsTable, this.prescriptionsTable, this.attachmentsTable]) {
+        const constraints = await this.database.query(`
+          SELECT constraint_name FROM information_schema.table_constraints
+          WHERE constraint_schema = DATABASE() AND table_name = ? AND constraint_type = 'FOREIGN KEY'
+        `, [table]);
+        for (const constraint of constraints) {
+          const name = constraint.CONSTRAINT_NAME || constraint.constraint_name;
+          await this.database.query(`ALTER TABLE \`${table}\` DROP FOREIGN KEY \`${name}\``);
+        }
+      }
+      for (const [table, column, type, source] of pending) {
+        if (column === 'Id') {
+          await this.database.query(`ALTER TABLE \`${table}\` ADD COLUMN \`Id\` ${type} NOT NULL AUTO_INCREMENT UNIQUE FIRST`);
+          await this.database.query(`ALTER TABLE \`${table}\` DROP PRIMARY KEY, ADD PRIMARY KEY (\`Id\`)`);
+          continue;
+        }
+        await this.database.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${type} NULL`);
+        await this.database.query(`UPDATE \`${table}\` SET \`${column}\` = \`${source}\``);
+        await this.database.query(`ALTER TABLE \`${table}\` MODIFY \`${column}\` ${type} NOT NULL`);
+        await this.database.query(`ALTER TABLE \`${table}\` DROP PRIMARY KEY, ADD PRIMARY KEY (\`${column}\`)`);
+      }
+      if (columnsByTable.get(this.doctorsTable).has('user_id')) {
+        await this.database.query(`ALTER TABLE \`${this.doctorsTable}\` DROP COLUMN \`user_id\``);
+      }
+      for (const [table, column, definition] of [
+        [this.patientsTable, 'gender', "ENUM('Male', 'Female') NULL"],
+        [this.patientsTable, 'age', 'TINYINT UNSIGNED NULL'],
+      ]) {
+        if (!columnsByTable.get(table).has(column)) {
+          await this.database.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+        }
+      }
+      const foreignKeys = [
+        [this.sessionsTable, `${this.sessionsTable}_user_fk`, 'user_id', this.usersTable, 'id', 'CASCADE'],
+        [this.doctorsTable, `${this.doctorsTable}_user_fk`, 'DoctorId', this.usersTable, 'user_id', 'CASCADE'],
+        [this.patientsTable, `${this.patientsTable}_doctor_fk`, 'doctor_user_id', this.doctorsTable, 'DoctorId', 'RESTRICT'],
+        [this.appointmentsTable, `${this.appointmentsTable}_doctor_fk`, 'doctor_user_id', this.doctorsTable, 'DoctorId', 'RESTRICT'],
+        [this.appointmentsTable, `${this.appointmentsTable}_patient_fk`, 'patient_id', this.patientsTable, 'PatientId', 'RESTRICT'],
+        [this.prescriptionsTable, `${this.prescriptionsTable}_doctor_fk`, 'doctor_user_id', this.doctorsTable, 'DoctorId', 'RESTRICT'],
+        [this.prescriptionsTable, `${this.prescriptionsTable}_patient_fk`, 'patient_id', this.patientsTable, 'PatientId', 'RESTRICT'],
+        [this.prescriptionsTable, `${this.prescriptionsTable}_appointment_fk`, 'appointment_id', this.appointmentsTable, 'AppointId', 'SET NULL'],
+        [this.attachmentsTable, `${this.tablePrefix}_attachment_rx_fk`, 'prescription_id', this.prescriptionsTable, 'MedicationId', 'CASCADE'],
+      ];
+      for (const [table, constraint, column, parent, parentColumn, onDelete] of foreignKeys) {
+        await this.database.query(`
+          ALTER TABLE \`${table}\` ADD CONSTRAINT \`${constraint}\`
+          FOREIGN KEY (\`${column}\`) REFERENCES \`${parent}\` (\`${parentColumn}\`) ON DELETE ${onDelete}
+        `);
+      }
+    }
+    const patientColumns = await this.database.query(
+      'SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?',
+      [this.patientsTable],
+    );
+    const existingPatientColumns = new Set(patientColumns.map((column) => column.COLUMN_NAME || column.column_name));
+    for (const [column, definition] of [
+      ['gender', "ENUM('Male', 'Female') NULL"],
+      ['age', 'TINYINT UNSIGNED NULL'],
+    ]) {
+      if (!existingPatientColumns.has(column)) {
+        await this.database.query(`ALTER TABLE \`${this.patientsTable}\` ADD COLUMN \`${column}\` ${definition}`);
+      }
+    }
+    const patientOptionalColumns = await this.database.query(`
+      SELECT column_name, is_nullable FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = ?
+    `, [this.patientsTable]);
+    for (const [column, definition] of [
+      ['address', 'VARCHAR(300)'],
+      ['email', 'VARCHAR(254)'],
+      ['phone', 'VARCHAR(40)'],
+      ['birth_date', 'DATE'],
+    ]) {
+      const existing = patientOptionalColumns.find((item) => (item.COLUMN_NAME || item.column_name) === column);
+      if (existing && (existing.IS_NULLABLE || existing.is_nullable) === 'NO') {
+        await this.database.query(`ALTER TABLE \`${this.patientsTable}\` MODIFY COLUMN \`${column}\` ${definition} NULL`);
+      }
+    }
+    for (const [table, legacyColumn] of [
+      [this.doctorsTable, 'user_id'],
+      [this.patientsTable, 'id'],
+      [this.appointmentsTable, 'id'],
+      [this.prescriptionsTable, 'id'],
+      [this.attachmentsTable, 'id'],
+    ]) {
+      const columns = await this.database.query(
+        'SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?',
+        [table],
+      );
+      if (!columns.some((column) => (column.COLUMN_NAME || column.column_name) === legacyColumn)) continue;
+      if (table === this.doctorsTable) await this.dropForeignKeys(table);
+      await this.database.query(`ALTER TABLE \`${table}\` DROP COLUMN \`${legacyColumn}\``);
+      if (table === this.doctorsTable) await this.ensureClinicalForeignKeys();
+    }
+  }
+
+  async dropForeignKeys(table) {
+    const constraints = await this.database.query(`
+      SELECT constraint_name FROM information_schema.table_constraints
+      WHERE constraint_schema = DATABASE() AND table_name = ? AND constraint_type = 'FOREIGN KEY'
+    `, [table]);
+    for (const constraint of constraints) {
+      const name = constraint.CONSTRAINT_NAME || constraint.constraint_name;
+      await this.database.query(`ALTER TABLE \`${table}\` DROP FOREIGN KEY \`${name}\``);
+    }
+  }
+
+  async ensureClinicalForeignKeys() {
+    const foreignKeys = [
+      [this.sessionsTable, `${this.sessionsTable}_user_fk`, 'user_id', this.usersTable, 'id', 'CASCADE'],
+      [this.doctorsTable, `${this.doctorsTable}_user_fk`, 'DoctorId', this.usersTable, 'user_id', 'CASCADE'],
+      [this.patientsTable, `${this.patientsTable}_doctor_fk`, 'doctor_user_id', this.doctorsTable, 'DoctorId', 'RESTRICT'],
+      [this.appointmentsTable, `${this.appointmentsTable}_doctor_fk`, 'doctor_user_id', this.doctorsTable, 'DoctorId', 'RESTRICT'],
+      [this.appointmentsTable, `${this.appointmentsTable}_patient_fk`, 'patient_id', this.patientsTable, 'PatientId', 'RESTRICT'],
+      [this.prescriptionsTable, `${this.prescriptionsTable}_doctor_fk`, 'doctor_user_id', this.doctorsTable, 'DoctorId', 'RESTRICT'],
+      [this.prescriptionsTable, `${this.prescriptionsTable}_patient_fk`, 'patient_id', this.patientsTable, 'PatientId', 'RESTRICT'],
+      [this.prescriptionsTable, `${this.prescriptionsTable}_appointment_fk`, 'appointment_id', this.appointmentsTable, 'AppointId', 'SET NULL'],
+      [this.attachmentsTable, `${this.tablePrefix}_attachment_rx_fk`, 'prescription_id', this.prescriptionsTable, 'MedicationId', 'CASCADE'],
+    ];
+    for (const [table, constraint, column, parent, parentColumn, onDelete] of foreignKeys) {
+      const existing = await this.database.query(`
+        SELECT constraint_name FROM information_schema.table_constraints
+        WHERE constraint_schema = DATABASE() AND table_name = ? AND constraint_name = ? AND constraint_type = 'FOREIGN KEY'
+      `, [table, constraint]);
+      if (!existing.length) {
+        await this.database.query(`
+          ALTER TABLE \`${table}\` ADD CONSTRAINT \`${constraint}\`
+          FOREIGN KEY (\`${column}\`) REFERENCES \`${parent}\` (\`${parentColumn}\`) ON DELETE ${onDelete}
+        `);
+      }
+    }
   }
 
   async ensureSuperadmin({ userId, password }) {
@@ -185,6 +475,56 @@ export class AuthStore {
     if (token) await this.database.query(`DELETE FROM \`${this.sessionsTable}\` WHERE token_hash = ?`, [hashToken(token)]);
   }
 
+  async listPatients(doctorId = null) {
+    const rows = await this.database.query(`
+      SELECT PatientId, doctor_user_id, display_name, gender, age, address, email, phone,
+        DATE_FORMAT(birth_date, '%Y-%m-%d') AS birth_date,
+        DATE_FORMAT(last_visit, '%Y-%m-%d') AS last_visit,
+        initials, DATE_FORMAT(created_at, '%Y-%m-%d') AS created_at
+      FROM \`${this.patientsTable}\`
+      ${doctorId ? 'WHERE doctor_user_id = ?' : ''}
+      ORDER BY created_at DESC
+    `, doctorId ? [doctorId] : []);
+    return rows.map((patient) => ({
+      id: patient.PatientId,
+      persisted: true,
+      doctorId: patient.doctor_user_id,
+      name: patient.display_name,
+      gender: patient.gender,
+      age: Number(patient.age),
+      address: patient.address || '',
+      email: patient.email || '',
+      phone: patient.phone || '',
+      birthDate: patient.birth_date || '',
+      lastVisit: patient.last_visit,
+      initials: patient.initials,
+      createdAt: patient.created_at,
+    }));
+  }
+
+  async createPatient(doctorId, values) {
+    const patient = validatePatient(values);
+    const id = randomUUID();
+    const initials = patient.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase();
+    await this.database.query(`
+      INSERT INTO \`${this.patientsTable}\`
+        (PatientId, doctor_user_id, display_name, gender, age, address, email, phone, birth_date, last_visit, initials)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_DATE(), ?)
+    `, [id, doctorId, patient.name, patient.gender, patient.age, patient.address, patient.email, patient.phone, patient.birthDate, initials]);
+    return (await this.listPatients(doctorId)).find((item) => item.id === id);
+  }
+
+  async updatePatient(doctorId, patientId, values) {
+    const patient = validatePatient(values);
+    const initials = patient.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase();
+    await this.database.query(`
+      UPDATE \`${this.patientsTable}\`
+      SET display_name = ?, gender = ?, age = ?, address = ?, email = ?, phone = ?, birth_date = ?, initials = ?
+      WHERE PatientId = ? AND doctor_user_id = ?
+    `, [patient.name, patient.gender, patient.age, patient.address, patient.email, patient.phone, patient.birthDate, initials, patientId, doctorId]);
+    return (await this.listPatients(doctorId)).find((item) => item.id === patientId) || null;
+  }
+
   async changePassword(token, password) {
     if (!validatePassword(password)) throw new Error('Password must be at least 12 characters.');
     const connection = await this.database.getConnection();
@@ -221,9 +561,12 @@ export class AuthStore {
 
   async listDoctors() {
     const rows = await this.database.query(`
-      SELECT user_id, display_name, email, specialty, address, package_name, register_date, last_renewal, must_change_password,
-        DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
-      FROM \`${this.usersTable}\` WHERE role = 'doctor' ORDER BY display_name
+      SELECT doctors.DoctorId AS user_id, users.display_name, users.email, doctors.specialty, doctors.address,
+        doctors.package_name, doctors.register_date, doctors.last_renewal, users.must_change_password,
+        DATE_FORMAT(users.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+      FROM \`${this.usersTable}\` AS users
+      JOIN \`${this.doctorsTable}\` AS doctors ON doctors.DoctorId = users.user_id
+      WHERE users.role = 'doctor' ORDER BY users.display_name
     `);
     return rows.map((doctor) => ({
       id: doctor.user_id,
@@ -248,24 +591,38 @@ export class AuthStore {
     const profile = validateDoctorProfile({ address, packageName, registerDate, lastRenewal });
     const temporaryPassword = randomBytes(18).toString('base64url');
     const { salt, hash } = makePasswordHash(temporaryPassword);
-    await this.database.query(`
-      INSERT INTO \`${this.usersTable}\` (user_id, display_name, email, specialty, role, password_salt, password_hash, must_change_password, address, package_name, register_date, last_renewal)
-      VALUES (?, ?, ?, ?, 'doctor', ?, ?, 1, ?, ?, ?, ?)
-    `, [userId.trim(), name.trim(), email.trim().toLowerCase(), specialty.trim(), salt, hash, profile.address, profile.packageName, profile.registerDate, profile.lastRenewal]);
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query(`
+        INSERT INTO \`${this.usersTable}\` (user_id, display_name, email, specialty, role, password_salt, password_hash, must_change_password, address, package_name, register_date, last_renewal)
+        VALUES (?, ?, ?, ?, 'doctor', ?, ?, 1, ?, ?, ?, ?)
+      `, [userId.trim(), name.trim(), email.trim().toLowerCase(), specialty.trim(), salt, hash, profile.address, profile.packageName, profile.registerDate, profile.lastRenewal]);
+      await connection.query(`
+        INSERT INTO \`${this.doctorsTable}\` (DoctorId, specialty, address, package_name, register_date, last_renewal)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [userId.trim(), specialty.trim(), profile.address, profile.packageName, profile.registerDate, profile.lastRenewal]);
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
     return { temporaryPassword };
   }
 
   async updateDoctorProfile(userId, profileValues) {
     const doctors = await this.database.query(
-      `SELECT id FROM \`${this.usersTable}\` WHERE user_id = ? AND role = 'doctor'`,
+      `SELECT DoctorId FROM \`${this.doctorsTable}\` WHERE DoctorId = ?`,
       [userId],
     );
     const doctor = doctors[0];
     if (!doctor) return null;
     const profile = validateDoctorProfile(profileValues);
     await this.database.query(
-      `UPDATE \`${this.usersTable}\` SET address = ?, package_name = ?, register_date = ?, last_renewal = ? WHERE id = ?`,
-      [profile.address, profile.packageName, profile.registerDate, profile.lastRenewal, doctor.id],
+      `UPDATE \`${this.doctorsTable}\` SET address = ?, package_name = ?, register_date = ?, last_renewal = ? WHERE DoctorId = ?`,
+      [profile.address, profile.packageName, profile.registerDate, profile.lastRenewal, doctor.DoctorId],
     );
     return (await this.listDoctors()).find((item) => item.id === userId);
   }

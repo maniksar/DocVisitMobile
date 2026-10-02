@@ -122,7 +122,20 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(result.error || 'The request could not be completed.');
   return result;
 }
-function saveRecords() { try { localStorage.setItem(storageKey, JSON.stringify(records)); } catch { /* Keep this page session usable. */ } }
+function saveRecords() {
+  const demoPatientIds = new Set(['pt-1', 'pt-2', 'pt-3', 'pt-4', 'pt-5', 'pt-6']);
+  try {
+    localStorage.setItem(storageKey, JSON.stringify({
+      ...records,
+      patients: records.patients.filter((patient) => demoPatientIds.has(patient.id)),
+    }));
+  } catch { /* Keep this page session usable. */ }
+}
+async function loadPatients() {
+  const { patients } = await api('/api/patients');
+  const demoPatients = createExistingDoctorSampleRecords().patients;
+  records.patients = [...demoPatients, ...patients];
+}
 function openAttachmentDb() {
   if (!attachmentDbPromise) {
     attachmentDbPromise = new Promise((resolve, reject) => {
@@ -219,8 +232,8 @@ function renderPatients() {
     const hasDoctorRecords = item.doctorId === doctorId || records.appointments.some((appointment) => appointment.patientId === item.id && isDoctorRecord(appointment, doctorId)) || records.prescriptions.some((prescription) => prescription.patientId === item.id && isDoctorRecord(prescription, doctorId));
     return hasDoctorRecords;
   });
-  byId('patient-grid').innerHTML = filtered.map((item) => `<article class="patient-card"><div class="patient-card-top"><span class="avatar">${escapeHtml(initialsFor(item))}</span><span><strong>${escapeHtml(item.name)}</strong><small>Last visit ${dateLabel(item.lastVisit, { month: 'long', year: 'numeric' })}</small></span><button class="icon-button patient-history-button" type="button" data-patient-history="${escapeHtml(item.id)}" aria-label="View appointments and prescriptions for ${escapeHtml(item.name)}" title="View patient history">◷</button></div><div class="patient-detail"><span class="patient-address">Address<strong>${escapeHtml(item.address || 'Not provided')}</strong></span><span>Email<strong>${escapeHtml(item.email)}</strong></span><span>Phone<strong>${escapeHtml(item.phone)}</strong></span><span>Date of birth<strong>${dateLabel(item.birthDate, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></span><span>Last visit<strong>${dateLabel(item.lastVisit, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></span></div></article>`).join('');
-  byId('patient-list-rows').innerHTML = filtered.map((item) => `<tr><td><span class="patient-list-identity"><button class="icon-button patient-history-button" type="button" data-patient-history="${escapeHtml(item.id)}" aria-label="View appointments and prescriptions for ${escapeHtml(item.name)}" title="View patient history">◷</button><span class="table-person"><span class="avatar">${escapeHtml(initialsFor(item))}</span><strong>${escapeHtml(item.name)}</strong></span></span></td><td>${escapeHtml(item.address || 'Not provided')}</td><td>${escapeHtml(item.email)}</td><td>${escapeHtml(item.phone)}</td><td>${dateLabel(item.birthDate, { month: 'short', day: 'numeric', year: 'numeric' })}</td><td>${dateLabel(item.lastVisit, { month: 'short', day: 'numeric', year: 'numeric' })}</td></tr>`).join('');
+  byId('patient-grid').innerHTML = filtered.map((item) => `<article class="patient-card"><div class="patient-card-top"><span class="avatar">${escapeHtml(initialsFor(item))}</span><span><strong>${escapeHtml(item.name)}</strong><small>Last visit ${dateLabel(item.lastVisit, { month: 'long', year: 'numeric' })}</small></span><span class="patient-card-actions">${currentUser?.role === 'doctor' ? `<button class="icon-button patient-edit-button" type="button" data-edit-patient="${escapeHtml(item.id)}" aria-label="Edit ${escapeHtml(item.name)}" title="Edit patient">✎</button>` : ''}<button class="icon-button patient-history-button" type="button" data-patient-history="${escapeHtml(item.id)}" aria-label="View appointments and prescriptions for ${escapeHtml(item.name)}" title="View patient history">◷</button></span></div><div class="patient-detail"><span class="patient-address">Address/Locality<strong>${escapeHtml(item.address || 'Not provided')}</strong></span><span>Gender<strong>${escapeHtml(item.gender || '—')}</strong></span><span>Age<strong>${item.age ?? '—'}</strong></span><span>Email<strong>${escapeHtml(item.email || 'Not provided')}</strong></span><span>Phone<strong>${escapeHtml(item.phone || 'Not provided')}</strong></span><span>Date of birth<strong>${item.birthDate ? dateLabel(item.birthDate, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Not provided'}</strong></span><span>Last visit<strong>${item.lastVisit ? dateLabel(item.lastVisit, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Not provided'}</strong></span></div></article>`).join('');
+  byId('patient-list-rows').innerHTML = filtered.map((item) => `<tr><td><span class="patient-list-identity">${currentUser?.role === 'doctor' ? `<button class="icon-button patient-edit-button" type="button" data-edit-patient="${escapeHtml(item.id)}" aria-label="Edit ${escapeHtml(item.name)}" title="Edit patient">✎</button>` : ''}<button class="icon-button patient-history-button" type="button" data-patient-history="${escapeHtml(item.id)}" aria-label="View appointments and prescriptions for ${escapeHtml(item.name)}" title="View patient history">◷</button><span class="table-person"><span class="avatar">${escapeHtml(initialsFor(item))}</span><strong>${escapeHtml(item.name)}</strong></span></span></td><td>${escapeHtml(item.gender || '—')}</td><td>${item.age ?? '—'}</td><td>${escapeHtml(item.address || 'Not provided')}</td><td>${escapeHtml(item.email || 'Not provided')}</td><td>${escapeHtml(item.phone || 'Not provided')}</td><td>${item.birthDate ? dateLabel(item.birthDate, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Not provided'}</td><td>${item.lastVisit ? dateLabel(item.lastVisit, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Not provided'}</td></tr>`).join('');
   byId('patient-grid').hidden = patientDisplayMode !== 'grid' || filtered.length === 0;
   byId('patient-list').hidden = patientDisplayMode !== 'list' || filtered.length === 0;
   document.querySelectorAll('[data-patient-mode]').forEach((button) => {
@@ -385,7 +398,7 @@ function render() {
     : headings[currentView][1];
   byId('date-eyebrow').textContent = isAdmin ? 'PRACTICE ADMINISTRATION' : currentView === 'dashboard' ? 'YOUR PRACTICE' : 'DOCTOR WORKSPACE';
 }
-function showApp(user) {
+async function showApp(user) {
   currentUser = user;
   previewDoctorId = null;
   currentView = user.role === 'superadmin' ? 'doctors' : 'patients';
@@ -399,6 +412,14 @@ function showApp(user) {
   const initials = user.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase();
   byId('account-initials').textContent = initials;
   byId('account-avatar').textContent = initials;
+  byId('patient-storage-error').hidden = true;
+  try {
+    await loadPatients();
+  } catch (error) {
+    records.patients = createExistingDoctorSampleRecords().patients;
+    byId('patient-storage-error').textContent = `Patient records could not be loaded from the server: ${error.message}`;
+    byId('patient-storage-error').hidden = false;
+  }
   render();
 }
 function showLogin() {
@@ -493,6 +514,9 @@ function doctorProfileFields(profile = {}) {
 
 function openModal(type, context = {}) {
   const patients = (currentUser?.role === 'doctor' ? doctorPatientsForCurrentUser() : records.patients);
+  const patientValues = context.patient || {};
+  const patientIsEditing = type === 'patient' && Boolean(context.patientId);
+  const patientGender = patientValues.gender || '';
   const appointmentValues = context.values || {};
   const selectedPatientId = context.patientId || appointmentValues.patientId || '';
   const selectedPatientName = patients.find((item) => item.id === selectedPatientId)?.name || '';
@@ -521,7 +545,7 @@ function openModal(type, context = {}) {
   const prescriptionFormFields = `${returnToHistoryField}${prescriptionIsEditing ? `<input type="hidden" name="prescriptionId" value="${escapeHtml(context.prescriptionId)}" />` : ''}${prescriptionPatientField}${prescriptionAppointmentField}<label for="prescription-medication">Medication ${prescriptionIsEditing ? '' : requiredMarker}</label><input id="prescription-medication" name="medication" value="${escapeHtml(prescriptionValues.medication || '')}" required /><label for="prescription-directions">Directions ${prescriptionIsEditing ? '' : requiredMarker}</label><input id="prescription-directions" name="directions" value="${escapeHtml(prescriptionValues.directions || '')}" placeholder="e.g. 10 mg · Once daily" required /><span class="form-label">Attachments ${prescriptionIsEditing ? '' : requiredMarker}</span><div class="attachment-picker"><button class="button button--secondary" type="button" data-upload-target="prescription-files">Upload file</button><button class="button button--secondary" type="button" data-upload-target="prescription-camera">Take photo</button><input id="prescription-files" type="file" accept="image/*,application/pdf" multiple hidden /><input id="prescription-camera" type="file" accept="image/*" capture="environment" multiple hidden /></div><p class="selected-files" id="selected-prescription-files" aria-live="polite">${prescriptionIsEditing && prescriptionValues.attachments?.length ? 'Existing attachments will be kept.' : 'No files selected'}</p><label class="field-half" for="prescription-refills">Refills</label><label class="field-half" for="prescription-expires">Review date</label><input class="field-half" id="prescription-refills" name="refills" type="number" min="0" max="12" value="${escapeHtml(prescriptionValues.refills ?? 0)}" required /><input class="field-half" id="prescription-expires" name="expires" type="date" value="${escapeHtml(prescriptionValues.expires || addDays(30))}" required /><label for="prescription-status">Status</label><select id="prescription-status" name="status">${prescriptionStatuses.map((status) => `<option${prescriptionStatus === status ? ' selected' : ''}>${escapeHtml(status)}</option>`).join('')}</select><label for="prescription-notes">Notes <span class="table-subtext">Optional</span></label><textarea id="prescription-notes" name="notes" rows="3">${escapeHtml(prescriptionValues.notes || '')}</textarea>`;
   const forms = {
     appointment: ['SCHEDULE', appointmentIsEditing ? 'Edit appointment' : 'New appointment', `${returnToHistoryField}${appointmentIsEditing ? `<input type="hidden" name="appointmentId" value="${escapeHtml(context.appointmentId)}" />` : ''}${appointmentPatientField}${appointmentIsEditing ? `<label for="appointment-date">Appointment date</label><input id="appointment-date" name="date" type="date" value="${escapeHtml(appointmentValues.date)}" readonly aria-readonly="true" /><label for="appointment-type">Visit type</label><select id="appointment-type" name="type"><option${appointmentValues.type === 'Consultation' ? ' selected' : ''}>Consultation</option><option${appointmentValues.type === 'Follow-up' ? ' selected' : ''}>Follow-up</option><option${appointmentValues.type === 'Annual check-up' ? ' selected' : ''}>Annual check-up</option><option${appointmentValues.type === 'Medication review' ? ' selected' : ''}>Medication review</option></select><label for="appointment-time">Time</label><input id="appointment-time" name="time" type="time" value="${escapeHtml(appointmentValues.time || '09:00')}" required /><label for="appointment-status">Status</label><select id="appointment-status" name="status">${appointmentStatuses.map((status) => `<option${(appointmentValues.status || 'Confirmed') === status ? ' selected' : ''}>${status}</option>`).join('')}</select>` : `<label for="appointment-type">Visit type</label><select id="appointment-type" name="type"><option${appointmentValues.type === 'Consultation' || !appointmentValues.type ? ' selected' : ''}>Consultation</option><option${appointmentValues.type === 'Follow-up' ? ' selected' : ''}>Follow-up</option><option${appointmentValues.type === 'Annual check-up' ? ' selected' : ''}>Annual check-up</option><option${appointmentValues.type === 'Medication review' ? ' selected' : ''}>Medication review</option></select><label class="field-half" for="appointment-date">Date</label><label class="field-half" for="appointment-time">Time</label><input class="field-half" id="appointment-date" name="date" type="date" value="${escapeHtml(appointmentValues.date || isoDate(today))}"${minAppointmentDate ? ` min="${minAppointmentDate}"` : ''} required /><input class="field-half" id="appointment-time" name="time" type="time" value="${escapeHtml(appointmentValues.time || '09:00')}" required /><label for="appointment-room">Room</label><select id="appointment-room" name="room"><option${appointmentValues.room === 'Room 01' || !appointmentValues.room ? ' selected' : ''}>Room 01</option><option${appointmentValues.room === 'Room 02' ? ' selected' : ''}>Room 02</option><option${appointmentValues.room === 'Room 03' ? ' selected' : ''}>Room 03</option></select>`}`],
-    patient: ['DIRECTORY', 'Add patient', `<label for="patient-name">Full name</label><input id="patient-name" name="name" autocomplete="name" required /><label for="patient-address">Address</label><input id="patient-address" name="address" autocomplete="street-address" required /><label for="patient-email">Email</label><input id="patient-email" name="email" type="email" autocomplete="email" required /><label for="patient-phone">Phone</label><input id="patient-phone" name="phone" type="tel" autocomplete="tel" required /><label for="patient-birth">Date of birth</label><input id="patient-birth" name="birthDate" type="date" required />`],
+    patient: ['DIRECTORY', patientIsEditing ? 'Edit patient' : 'Add patient', `${patientIsEditing ? `<input type="hidden" name="patientId" value="${escapeHtml(context.patientId)}" />` : ''}<label for="patient-name">Full name ${requiredMarker}</label><input id="patient-name" name="name" autocomplete="name" maxlength="120" value="${escapeHtml(patientValues.name || '')}" required /><label for="patient-gender">Gender ${requiredMarker}</label><select id="patient-gender" name="gender" required><option value=""${patientGender ? '' : ' selected'} disabled>Select gender</option><option${patientGender === 'Male' ? ' selected' : ''}>Male</option><option${patientGender === 'Female' ? ' selected' : ''}>Female</option></select><label for="patient-age">Age ${requiredMarker}</label><input id="patient-age" name="age" type="number" min="0" max="130" step="1" value="${escapeHtml(patientValues.age ?? '')}" required /><label for="patient-phone">Phone</label><input id="patient-phone" name="phone" type="tel" autocomplete="tel" value="${escapeHtml(patientValues.phone || '')}" /><label for="patient-address">Address/Locality</label><input id="patient-address" name="address" autocomplete="street-address" value="${escapeHtml(patientValues.address || '')}" /><label for="patient-email">Email</label><input id="patient-email" name="email" type="email" autocomplete="email" value="${escapeHtml(patientValues.email || '')}" /><label for="patient-birth">Date of birth</label><input id="patient-birth" name="birthDate" type="date" value="${escapeHtml(patientValues.birthDate || '')}" />`],
     prescription: ['MEDICATION MANAGEMENT', prescriptionIsEditing ? 'Edit prescription' : 'New prescription', `${returnToHistoryField}${prescriptionIsEditing ? `<input type="hidden" name="prescriptionId" value="${escapeHtml(context.prescriptionId)}" />` : ''}${prescriptionPatientField}${prescriptionAppointmentField}<label for="prescription-medication">Medication</label><input id="prescription-medication" name="medication" value="${escapeHtml(prescriptionValues.medication || '')}" required /><label for="prescription-directions">Directions</label><input id="prescription-directions" name="directions" value="${escapeHtml(prescriptionValues.directions || '')}" placeholder="e.g. 10 mg · Once daily" required /><span class="form-label">Attachments</span><div class="attachment-picker"><button class="button button--secondary" type="button" data-upload-target="prescription-files">Upload file</button><button class="button button--secondary" type="button" data-upload-target="prescription-camera">Take photo</button><input id="prescription-files" type="file" accept="image/*,application/pdf" multiple hidden /><input id="prescription-camera" type="file" accept="image/*" capture="environment" multiple hidden /></div><p class="selected-files" id="selected-prescription-files" aria-live="polite">${prescriptionIsEditing && prescriptionValues.attachments?.length ? 'Existing attachments will be kept.' : 'No files selected'}</p><label class="field-half" for="prescription-refills">Refills</label><label class="field-half" for="prescription-expires">Review date</label><input class="field-half" id="prescription-refills" name="refills" type="number" min="0" max="12" value="${escapeHtml(prescriptionValues.refills ?? 0)}" required /><input class="field-half" id="prescription-expires" name="expires" type="date" value="${escapeHtml(prescriptionValues.expires || addDays(30))}" required /><label for="prescription-status">Status</label><select id="prescription-status" name="status">${prescriptionStatuses.map((status) => `<option${prescriptionStatus === status ? ' selected' : ''}>${escapeHtml(status)}</option>`).join('')}</select><label for="prescription-notes">Notes <span class="table-subtext">Optional</span></label><textarea id="prescription-notes" name="notes" rows="3">${escapeHtml(prescriptionValues.notes || '')}</textarea>`],
     doctor: ['PRACTICE ACCESS', 'Create doctor profile', `<label for="doctor-name">Doctor name</label><input id="doctor-name" name="name" autocomplete="name" required /><label for="doctor-user-id">User ID</label><input id="doctor-user-id" name="userId" autocomplete="off" minlength="3" maxlength="32" required /><label for="doctor-specialty">Specialty</label><input id="doctor-specialty" name="specialty" required /><label for="doctor-email">Work email</label><input id="doctor-email" name="email" type="email" autocomplete="email" required />${doctorProfileFields()}`],
     doctorEdit: ['PRACTICE ACCESS', 'Edit doctor profile', `<input type="hidden" name="userId" value="${escapeHtml(context.id)}" /><p class="doctor-edit-identity"><strong>${escapeHtml(context.name)}</strong><span>User ID · ${escapeHtml(context.id)}</span></p>${doctorProfileFields(context)}`],
@@ -529,10 +553,21 @@ function openModal(type, context = {}) {
   forms.prescription[2] = prescriptionFormFields;
   const [eyebrow, title, fields] = forms[type];
   const patientFormAction = type === 'patient' && context.continueAppointment;
-  const saveLabel = patientFormAction ? 'Create & continue booking' : appointmentIsEditing ? 'Save appointment' : prescriptionIsEditing ? 'Save prescription' : `Save ${type}`;
+  const saveLabel = patientFormAction ? 'Create & continue booking' : patientIsEditing ? 'Save patient' : appointmentIsEditing ? 'Save appointment' : prescriptionIsEditing ? 'Save prescription' : `Save ${type}`;
   clearModal();
-  byId('modal-root').innerHTML = `<div class="modal-layer" data-close-modal><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><p class="eyebrow">${eyebrow}</p><h2 id="modal-title">${patientFormAction ? 'Add patient & book appointment' : title}</h2></div><button class="modal-close" type="button" data-close-modal aria-label="Close dialog">×</button></div><form class="modal-form" data-form="${type}"${appointmentIsEditing ? ' data-appointment-edit="true"' : ''}${prescriptionIsEditing ? ' data-prescription-edit="true"' : ''}${patientFormAction ? ' data-continue-appointment="true"' : ''}>${fields}<div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal>Cancel</button><button class="button button--primary" type="submit"${type === 'prescription' && !prescriptionIsEditing ? ' data-prescription-save disabled' : ''}>${saveLabel}</button></div></form></section></div>`;
+  byId('modal-root').innerHTML = `<div class="modal-layer" data-close-modal><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><p class="eyebrow">${eyebrow}</p><h2 id="modal-title">${patientFormAction ? 'Add patient & book appointment' : title}</h2></div><button class="modal-close" type="button" data-close-modal aria-label="Close dialog">×</button></div><form class="modal-form" data-form="${type}"${appointmentIsEditing ? ' data-appointment-edit="true"' : ''}${prescriptionIsEditing ? ' data-prescription-edit="true"' : ''}${patientIsEditing ? ' data-patient-edit="true"' : ''}${patientFormAction ? ' data-continue-appointment="true"' : ''}>${fields}<div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal>Cancel</button><button class="button button--primary" type="submit"${type === 'prescription' && !prescriptionIsEditing ? ' data-prescription-save disabled' : ''}${patientIsEditing ? ' data-patient-save disabled' : ''}>${saveLabel}</button></div></form></section></div>`;
   if (type === 'prescription') updatePrescriptionSaveState();
+  if (patientIsEditing) {
+    const form = byId('modal-root').querySelector('[data-form="patient"]');
+    const saveButton = form.querySelector('[data-patient-save]');
+    const originalValues = JSON.stringify(Object.fromEntries([...new FormData(form)].filter(([name]) => name !== 'patientId')));
+    const updateSaveButton = () => {
+      const currentValues = JSON.stringify(Object.fromEntries([...new FormData(form)].filter(([name]) => name !== 'patientId')));
+      saveButton.disabled = currentValues === originalValues;
+    };
+    form.addEventListener('input', updateSaveButton);
+    form.addEventListener('change', updateSaveButton);
+  }
   if (type === 'appointment') {
     const patientSearch = byId('appointment-patient-search');
     patientSearch.addEventListener('focus', filterAppointmentPatients);
@@ -572,6 +607,11 @@ document.addEventListener('click', async (event) => {
   }
   if (target.dataset.patientMode) { patientDisplayMode = target.dataset.patientMode; renderPatients(); }
   if (target.dataset.patientHistory) showPatientHistory(target.dataset.patientHistory);
+  if (target.dataset.editPatient && currentUser?.role === 'doctor') {
+    const patient = records.patients.find((item) => item.id === target.dataset.editPatient && item.persisted && item.doctorId === currentUser.id);
+    if (patient) openModal('patient', { patientId: patient.id, patient });
+    else window.alert('This is demo patient data and cannot be edited. Add a patient to save an editable record to the database.');
+  }
   if (target.dataset.bookAppointment) openModal('appointment', { patientId: target.dataset.bookAppointment });
   if (target.dataset.editAppointment) {
     const appointment = records.appointments.find((item) => item.id === target.dataset.editAppointment);
@@ -685,7 +725,7 @@ document.addEventListener('submit', async (event) => {
     try {
       const { user } = await api('/api/auth/login', { method: 'POST', body: JSON.stringify(data) });
       if (user.mustChangePassword) showPasswordChange(user);
-      else showApp(user);
+      else await showApp(user);
     } catch (error) {
       loginError.textContent = error.message;
       loginError.hidden = false;
@@ -699,7 +739,7 @@ document.addEventListener('submit', async (event) => {
     const data = Object.fromEntries(new FormData(event.target).entries());
     try {
       const { user } = await api('/api/auth/password', { method: 'POST', body: JSON.stringify(data) });
-      showApp(user);
+      await showApp(user);
     } catch (error) {
       passwordError.textContent = error.message;
       passwordError.hidden = false;
@@ -713,7 +753,7 @@ document.addEventListener('submit', async (event) => {
     const data = Object.fromEntries(new FormData(event.target).entries());
     try {
       const { user } = await api('/api/setup', { method: 'POST', body: JSON.stringify(data) });
-      showApp(user);
+      await showApp(user);
     } catch (error) {
       setupError.textContent = error.message;
       setupError.hidden = false;
@@ -807,16 +847,26 @@ document.addEventListener('submit', async (event) => {
     }
   }
   if (form.dataset.form === 'patient') {
-    const patient = {
-      id: `pt-${Date.now()}`,
-      ...data,
-      lastVisit: isoDate(today),
-      createdAt: isoDate(today),
-      doctorId: currentUser?.id || null,
-      initials: data.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(),
-    };
-    records.patients.push(patient);
-    saveRecords();
+    let patient;
+    try {
+      if (form.dataset.patientEdit === 'true') {
+        const existing = records.patients.find((item) => item.id === data.patientId && item.persisted && item.doctorId === currentUser?.id);
+        if (!existing) throw new Error('This patient is no longer available to edit.');
+        ({ patient } = await api(`/api/patients/${encodeURIComponent(data.patientId)}`, { method: 'PUT', body: JSON.stringify(data) }));
+        Object.assign(existing, patient);
+      } else {
+        ({ patient } = await api('/api/patients', { method: 'POST', body: JSON.stringify(data) }));
+        records.patients.push(patient);
+      }
+    } catch (error) {
+      const errorElement = document.createElement('p');
+      errorElement.className = 'login-error';
+      errorElement.setAttribute('role', 'alert');
+      errorElement.textContent = error.message;
+      form.prepend(errorElement);
+      return;
+    }
+    byId('patient-storage-error').hidden = true;
     if (form.dataset.continueAppointment === 'true') {
       const appointmentValues = pendingAppointmentDraft || {};
       pendingAppointmentDraft = null;

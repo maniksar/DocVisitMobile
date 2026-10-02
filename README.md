@@ -19,24 +19,41 @@ loopback connections.
 
 Create a MariaDB database and user, then configure `DB_HOST`, `DB_PORT`,
 `DB_NAME`, `DB_USER`, and `DB_PASSWORD` in `.env.local`. The app creates its
-`docvisit_users` and `docvisit_sessions` tables on startup. Never commit
+prefixed authentication and clinical-schema tables on startup. Never commit
 `.env.local` or put database credentials in source control.
 
 ### Create the database tables manually
 
-If you want to create the tables before starting the app, select your
-DocVisitMobile database in Hostinger phpMyAdmin and import
-[`database/schema.sql`](./database/schema.sql). The script creates the users
-and sessions tables using the default `DB_TABLE_PREFIX=docvisit`. If you set a
-different prefix, rename both table names and the sessions foreign-key
-constraint in the script to match it. The app's database user needs permission
-to create tables and manage sessions.
+For a new database, select your DocVisitMobile database in Hostinger phpMyAdmin
+and import
+[`database/schema.sql`](./database/schema.sql). The script creates users,
+sessions, doctor profiles, patients, appointments, prescriptions, and
+prescription attachment tables using the default `DB_TABLE_PREFIX=docvisit`.
+Account keys use `id`; sessions use `Id`; doctors, patients, appointments,
+prescriptions, and attachments use `DoctorId`, `PatientId`, `AppointId`,
+`MedicationId`, and `AttachId`. If you set a different prefix, rename the
+table names and foreign-key constraints in the script to match it. The app's
+database user needs permission to create and alter these tables.
+For an existing installation, deploy and restart the updated Node.js app
+instead of relying on `CREATE TABLE IF NOT EXISTS` to modify existing tables.
+Startup migrates the existing primary keys and relationships in place while
+preserving their rows, backfills doctor profiles for existing doctor accounts,
+and requires `ALTER TABLE` permission.
 
 The script creates the schema only; it does not add an admin account or store a
 password. On first app start, set `SUPERADMIN_PASSWORD` in the server
 environment. DocVisitMobile creates the `maniksar` admin account and stores a
-one-way password hash. Patient, appointment, and prescription data are not
-stored in these MariaDB tables; they remain in browser storage.
+one-way password hash. Existing doctor accounts are backfilled to
+`docvisit_doctors`; newly created doctor accounts and profile updates are
+stored there. New and edited patient details, including gender and age, are
+written to MariaDB through authenticated patient endpoints and loaded from the
+server. Existing patient entries stored in browsers are not automatically
+migrated because they do not have the required gender and age values.
+For patients, only full name, gender, and age are mandatory; address/locality,
+email, phone, and date of birth may be left blank.
+Appointments, prescriptions, and their attachment blobs still use browser local
+storage/IndexedDB and are not yet persisted in their MariaDB tables. Do not
+enter real patient information.
 
 ## Hostinger deployment
 
