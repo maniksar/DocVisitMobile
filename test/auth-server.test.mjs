@@ -216,6 +216,123 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
   const patients = await api(baseUrl, '/api/patients', { cookie: doctorLogin.cookie });
   assert.equal(patients.response.status, 200);
   assert.ok(patients.result.patients.some((patient) => patient.id === createdPatient.result.patient.id && patient.name === 'Jamie Updated'));
+
+  const emptyAppointments = await api(baseUrl, '/api/appointments', { cookie: doctorLogin.cookie });
+  assert.equal(emptyAppointments.response.status, 200);
+  assert.deepEqual(emptyAppointments.result.appointments, []);
+  const appointmentInput = {
+    patientId: createdPatient.result.patient.id,
+    date: '2026-11-15',
+    time: '09:30',
+    type: 'Follow-up',
+    room: 'Room 02',
+    status: 'Confirmed',
+  };
+  const createdAppointment = await api(baseUrl, '/api/appointments', {
+    method: 'POST',
+    cookie: doctorLogin.cookie,
+    body: appointmentInput,
+  });
+  assert.equal(createdAppointment.response.status, 201);
+  assert.equal(createdAppointment.result.appointment.doctorId, 'doctor-ava');
+  assert.equal(createdAppointment.result.appointment.patientId, createdPatient.result.patient.id);
+  assert.equal(createdAppointment.result.appointment.date, appointmentInput.date);
+  assert.equal(typeof createdAppointment.result.appointment.id, 'string');
+
+  const updatedAppointment = await api(baseUrl, `/api/appointments/${encodeURIComponent(createdAppointment.result.appointment.id)}`, {
+    method: 'PUT',
+    cookie: doctorLogin.cookie,
+    body: { ...appointmentInput, date: '2026-11-16', time: '10:15', status: 'Checked in' },
+  });
+  assert.equal(updatedAppointment.response.status, 200);
+  assert.equal(updatedAppointment.result.appointment.date, '2026-11-16');
+  assert.equal(updatedAppointment.result.appointment.status, 'Checked in');
+  const appointmentsAfterUpdate = await api(baseUrl, '/api/appointments', { cookie: doctorLogin.cookie });
+  assert.equal(appointmentsAfterUpdate.result.appointments.length, 1);
+  assert.equal(appointmentsAfterUpdate.result.appointments[0].id, createdAppointment.result.appointment.id);
+  const invalidAppointment = await api(baseUrl, '/api/appointments', {
+    method: 'POST',
+    cookie: doctorLogin.cookie,
+    body: { ...appointmentInput, status: 'Unknown' },
+  });
+  assert.equal(invalidAppointment.response.status, 400);
+
+  const prescriptionInput = {
+    patientId: createdPatient.result.patient.id,
+    appointmentId: createdAppointment.result.appointment.id,
+    medication: 'Example medication',
+    directions: 'One tablet daily',
+    refills: '2',
+    status: 'Active',
+    expires: '2026-12-31',
+    notes: 'Take with water',
+  };
+  const createdPrescription = await api(baseUrl, '/api/prescriptions', {
+    method: 'POST',
+    cookie: doctorLogin.cookie,
+    body: prescriptionInput,
+  });
+  assert.equal(createdPrescription.response.status, 201);
+  assert.equal(createdPrescription.result.prescription.doctorId, 'doctor-ava');
+  assert.equal(createdPrescription.result.prescription.patientId, createdPatient.result.patient.id);
+  assert.equal(createdPrescription.result.prescription.appointmentId, createdAppointment.result.appointment.id);
+  assert.equal(createdPrescription.result.prescription.medication, prescriptionInput.medication);
+
+  const updatedPrescription = await api(baseUrl, `/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}`, {
+    method: 'PUT',
+    cookie: doctorLogin.cookie,
+    body: { ...prescriptionInput, medication: 'Updated medication', status: 'Renewal due' },
+  });
+  assert.equal(updatedPrescription.response.status, 200);
+  assert.equal(updatedPrescription.result.prescription.medication, 'Updated medication');
+  assert.equal(updatedPrescription.result.prescription.status, 'Renewal due');
+
+  const attachmentBytes = Buffer.from('database-backed prescription file');
+  const attachmentResponse = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments?name=example.png`, {
+    method: 'POST',
+    headers: { Cookie: doctorLogin.cookie, 'Content-Type': 'image/png' },
+    body: attachmentBytes,
+  });
+  const savedAttachment = await attachmentResponse.json();
+  assert.equal(attachmentResponse.status, 201);
+  assert.equal(savedAttachment.attachment.name, 'example.png');
+  const relogin = await api(baseUrl, '/api/auth/login', {
+    method: 'POST',
+    body: { userId: 'doctor-ava', password: 'a changed and private password' },
+  });
+  assert.equal(relogin.response.status, 200);
+  const prescriptionListAfterRelogin = await api(baseUrl, '/api/prescriptions', { cookie: relogin.cookie });
+  assert.ok(prescriptionListAfterRelogin.result.prescriptions.some((item) => item.id === createdPrescription.result.prescription.id));
+  assert.equal(prescriptionListAfterRelogin.result.prescriptions.find((item) => item.id === createdPrescription.result.prescription.id).attachments.length, 1);
+
+  const downloadedAttachment = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments/${encodeURIComponent(savedAttachment.attachment.id)}`, {
+    headers: { Cookie: relogin.cookie },
+  });
+  assert.equal(downloadedAttachment.status, 200);
+  assert.deepEqual(Buffer.from(await downloadedAttachment.arrayBuffer()), attachmentBytes);
+  const appointmentsAfterRelogin = await api(baseUrl, '/api/appointments', { cookie: relogin.cookie });
+  assert.equal(appointmentsAfterRelogin.result.appointments.length, 1);
+  assert.equal(appointmentsAfterRelogin.result.appointments[0].status, 'Checked in');
+  const deletedAppointment = await api(baseUrl, `/api/appointments/${encodeURIComponent(createdAppointment.result.appointment.id)}`, {
+    method: 'DELETE',
+    cookie: relogin.cookie,
+  });
+  assert.equal(deletedAppointment.response.status, 200);
+  const prescriptionAfterAppointmentDelete = await api(baseUrl, '/api/prescriptions', { cookie: relogin.cookie });
+  assert.equal(prescriptionAfterAppointmentDelete.result.prescriptions.find((item) => item.id === createdPrescription.result.prescription.id).appointmentId, null);
+  const removedAttachment = await api(baseUrl, `/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments/${encodeURIComponent(savedAttachment.attachment.id)}`, {
+    method: 'DELETE',
+    cookie: doctorLogin.cookie,
+  });
+  assert.equal(removedAttachment.response.status, 200);
+  const removedPrescription = await api(baseUrl, `/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}`, {
+    method: 'DELETE',
+    cookie: doctorLogin.cookie,
+  });
+  assert.equal(removedPrescription.response.status, 200);
+  const prescriptionsAfterDelete = await api(baseUrl, '/api/prescriptions', { cookie: doctorLogin.cookie });
+  assert.ok(!prescriptionsAfterDelete.result.prescriptions.some((item) => item.id === createdPrescription.result.prescription.id));
+
   const invalidPatient = await api(baseUrl, '/api/patients', {
     method: 'POST',
     cookie: doctorLogin.cookie,

@@ -81,6 +81,45 @@ function validatePatient({ name, gender, age, address, email, phone, birthDate }
   return { name: displayName, gender, age: patientAge, address: patientAddress, email: patientEmail, phone: patientPhone, birthDate: patientBirthDate };
 }
 
+function validatePrescription({ patientId, appointmentId, medication, directions, refills, expires, notes, status }) {
+  const medicationName = typeof medication === 'string' ? medication.trim() : '';
+  const medicationDirections = typeof directions === 'string' ? directions.trim() : '';
+  const refillCount = typeof refills === 'string' && refills.trim() !== '' ? Number(refills) : refills;
+  const reviewDate = typeof expires === 'string' ? expires.trim() : '';
+  const prescriptionNotes = typeof notes === 'string' ? notes.trim() : '';
+  if (typeof patientId !== 'string' || !patientId) throw new Error('Select a patient.');
+  if (medicationName.length < 1 || medicationName.length > 200) throw new Error('Enter a valid medication name.');
+  if (medicationDirections.length < 1 || medicationDirections.length > 500) throw new Error('Enter valid medication directions.');
+  if (!Number.isInteger(refillCount) || refillCount < 0 || refillCount > 12) throw new Error('Refills must be between 0 and 12.');
+  if (!isValidDate(reviewDate)) throw new Error('Enter a valid review date.');
+  if (prescriptionNotes.length > 5000) throw new Error('Prescription notes must be 5000 characters or fewer.');
+  if (!['Active', 'Renewal due', 'Completed'].includes(status)) throw new Error('Choose a valid prescription status.');
+  if (appointmentId !== undefined && appointmentId !== null && typeof appointmentId !== 'string') throw new Error('Choose a valid appointment.');
+  return {
+    patientId,
+    appointmentId: appointmentId || null,
+    medication: medicationName,
+    directions: medicationDirections,
+    refills: refillCount,
+    expires: reviewDate,
+    notes: prescriptionNotes,
+    status,
+  };
+}
+
+function validateAppointment({ patientId, date, time, type, room, status }) {
+  const visitType = typeof type === 'string' ? type.trim() : '';
+  const appointmentRoom = typeof room === 'string' ? room.trim() : '';
+  const appointmentStatus = typeof status === 'string' ? status.trim() : 'Confirmed';
+  if (typeof patientId !== 'string' || !patientId) throw new Error('Select a patient.');
+  if (!isValidDate(date)) throw new Error('Enter a valid appointment date.');
+  if (typeof time !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error('Enter a valid appointment time.');
+  if (!['Consultation', 'Follow-up', 'Annual check-up', 'Medication review'].includes(visitType)) throw new Error('Choose a valid visit type.');
+  if (appointmentRoom.length > 40) throw new Error('Enter a valid room.');
+  if (!['Pending', 'Confirmed', 'Checked in', 'Completed', 'Cancelled'].includes(appointmentStatus)) throw new Error('Choose a valid appointment status.');
+  return { patientId, date, time, type: visitType, room: appointmentRoom, status: appointmentStatus };
+}
+
 export class AuthStore {
   constructor(pool, tablePrefix = 'docvisit') {
     if (!/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(tablePrefix)) throw new Error('Invalid database table prefix.');
@@ -523,6 +562,225 @@ export class AuthStore {
       WHERE PatientId = ? AND doctor_user_id = ?
     `, [patient.name, patient.gender, patient.age, patient.address, patient.email, patient.phone, patient.birthDate, initials, patientId, doctorId]);
     return (await this.listPatients(doctorId)).find((item) => item.id === patientId) || null;
+  }
+
+  async listAppointments(doctorId = null) {
+    const rows = await this.database.query(`
+      SELECT AppointId, doctor_user_id, patient_id,
+        DATE_FORMAT(appointment_date, '%Y-%m-%d') AS appointment_date,
+        TIME_FORMAT(appointment_time, '%H:%i') AS appointment_time,
+        visit_type, room, status
+      FROM \`${this.appointmentsTable}\`
+      ${doctorId ? 'WHERE doctor_user_id = ?' : ''}
+      ORDER BY appointment_date, appointment_time
+    `, doctorId ? [doctorId] : []);
+    return rows.map((appointment) => ({
+      id: appointment.AppointId,
+      doctorId: appointment.doctor_user_id,
+      patientId: appointment.patient_id,
+      date: appointment.appointment_date,
+      time: appointment.appointment_time,
+      type: appointment.visit_type,
+      room: appointment.room,
+      status: appointment.status,
+    }));
+  }
+
+  async createAppointment(doctorId, values) {
+    const appointment = validateAppointment(values);
+    const patients = await this.database.query(
+      `SELECT PatientId FROM \`${this.patientsTable}\` WHERE PatientId = ? AND doctor_user_id = ?`,
+      [appointment.patientId, doctorId],
+    );
+    if (!patients[0]) return null;
+    const id = randomUUID();
+    await this.database.query(`
+      INSERT INTO \`${this.appointmentsTable}\`
+        (AppointId, doctor_user_id, patient_id, appointment_date, appointment_time, visit_type, room, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, doctorId, appointment.patientId, appointment.date, appointment.time, appointment.type, appointment.room, appointment.status]);
+    return (await this.listAppointments(doctorId)).find((item) => item.id === id);
+  }
+
+  async updateAppointment(doctorId, appointmentId, values) {
+    const appointment = validateAppointment(values);
+    const patients = await this.database.query(
+      `SELECT PatientId FROM \`${this.patientsTable}\` WHERE PatientId = ? AND doctor_user_id = ?`,
+      [appointment.patientId, doctorId],
+    );
+    if (!patients[0]) return null;
+    const result = await this.database.query(`
+      UPDATE \`${this.appointmentsTable}\`
+      SET patient_id = ?, appointment_date = ?, appointment_time = ?, visit_type = ?, room = ?, status = ?
+      WHERE AppointId = ? AND doctor_user_id = ?
+    `, [appointment.patientId, appointment.date, appointment.time, appointment.type, appointment.room, appointment.status, appointmentId, doctorId]);
+    if (!result.affectedRows) {
+      const existing = await this.database.query(
+        `SELECT AppointId FROM \`${this.appointmentsTable}\` WHERE AppointId = ? AND doctor_user_id = ?`,
+        [appointmentId, doctorId],
+      );
+      if (!existing[0]) return null;
+    }
+    return (await this.listAppointments(doctorId)).find((item) => item.id === appointmentId) || null;
+  }
+
+  async deleteAppointment(doctorId, appointmentId) {
+    const result = await this.database.query(
+      `DELETE FROM \`${this.appointmentsTable}\` WHERE AppointId = ? AND doctor_user_id = ?`,
+      [appointmentId, doctorId],
+    );
+    return result.affectedRows > 0;
+  }
+
+  async listPrescriptions(doctorId = null) {
+    const prescriptions = await this.database.query(`
+      SELECT MedicationId, doctor_user_id, patient_id, appointment_id, medication, directions, refills, status,
+        DATE_FORMAT(review_date, '%Y-%m-%d') AS review_date, notes
+      FROM \`${this.prescriptionsTable}\`
+      ${doctorId ? 'WHERE doctor_user_id = ?' : ''}
+      ORDER BY created_at DESC
+    `, doctorId ? [doctorId] : []);
+    if (!prescriptions.length) return [];
+    const attachments = await this.database.query(`
+      SELECT attachment.AttachId, attachment.prescription_id, attachment.file_name, attachment.content_type, attachment.file_size
+      FROM \`${this.attachmentsTable}\` AS attachment
+      JOIN \`${this.prescriptionsTable}\` AS prescription ON prescription.MedicationId = attachment.prescription_id
+      ${doctorId ? 'WHERE prescription.doctor_user_id = ?' : ''}
+      ORDER BY attachment.created_at, attachment.AttachId
+    `, doctorId ? [doctorId] : []);
+    const attachmentsByPrescription = new Map();
+    for (const attachment of attachments) {
+      const list = attachmentsByPrescription.get(attachment.prescription_id) || [];
+      list.push({
+        id: attachment.AttachId,
+        name: attachment.file_name,
+        type: attachment.content_type,
+        size: Number(attachment.file_size),
+      });
+      attachmentsByPrescription.set(attachment.prescription_id, list);
+    }
+    return prescriptions.map((prescription) => ({
+      id: prescription.MedicationId,
+      doctorId: prescription.doctor_user_id,
+      patientId: prescription.patient_id,
+      appointmentId: prescription.appointment_id,
+      medication: prescription.medication,
+      directions: prescription.directions,
+      refills: Number(prescription.refills),
+      status: prescription.status,
+      expires: prescription.review_date,
+      notes: prescription.notes,
+      attachments: attachmentsByPrescription.get(prescription.MedicationId) || [],
+    }));
+  }
+
+  async createPrescription(doctorId, values) {
+    const prescription = validatePrescription(values);
+    const patientRows = await this.database.query(
+      `SELECT PatientId FROM \`${this.patientsTable}\` WHERE PatientId = ? AND doctor_user_id = ?`,
+      [prescription.patientId, doctorId],
+    );
+    if (!patientRows[0]) return null;
+    let appointmentId = null;
+    if (prescription.appointmentId) {
+      const appointmentRows = await this.database.query(`
+        SELECT AppointId FROM \`${this.appointmentsTable}\`
+        WHERE AppointId = ? AND patient_id = ? AND doctor_user_id = ?
+      `, [prescription.appointmentId, prescription.patientId, doctorId]);
+      if (appointmentRows[0]) appointmentId = appointmentRows[0].AppointId;
+    }
+    const id = randomUUID();
+    await this.database.query(`
+      INSERT INTO \`${this.prescriptionsTable}\`
+        (MedicationId, doctor_user_id, patient_id, appointment_id, medication, directions, refills, status, review_date, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, doctorId, prescription.patientId, appointmentId, prescription.medication, prescription.directions,
+      prescription.refills, prescription.status, prescription.expires, prescription.notes]);
+    return (await this.listPrescriptions(doctorId)).find((item) => item.id === id);
+  }
+
+  async updatePrescription(doctorId, prescriptionId, values) {
+    const prescription = validatePrescription(values);
+    const patientRows = await this.database.query(
+      `SELECT PatientId FROM \`${this.patientsTable}\` WHERE PatientId = ? AND doctor_user_id = ?`,
+      [prescription.patientId, doctorId],
+    );
+    if (!patientRows[0]) return null;
+    const existingRows = await this.database.query(
+      `SELECT MedicationId FROM \`${this.prescriptionsTable}\` WHERE MedicationId = ? AND doctor_user_id = ?`,
+      [prescriptionId, doctorId],
+    );
+    if (!existingRows[0]) return null;
+    let appointmentId = null;
+    if (prescription.appointmentId) {
+      const appointmentRows = await this.database.query(`
+        SELECT AppointId FROM \`${this.appointmentsTable}\`
+        WHERE AppointId = ? AND patient_id = ? AND doctor_user_id = ?
+      `, [prescription.appointmentId, prescription.patientId, doctorId]);
+      if (appointmentRows[0]) appointmentId = appointmentRows[0].AppointId;
+    }
+    await this.database.query(`
+      UPDATE \`${this.prescriptionsTable}\`
+      SET patient_id = ?, appointment_id = ?, medication = ?, directions = ?, refills = ?, status = ?, review_date = ?, notes = ?
+      WHERE MedicationId = ? AND doctor_user_id = ?
+    `, [prescription.patientId, appointmentId, prescription.medication, prescription.directions, prescription.refills,
+      prescription.status, prescription.expires, prescription.notes, prescriptionId, doctorId]);
+    return (await this.listPrescriptions(doctorId)).find((item) => item.id === prescriptionId) || null;
+  }
+
+  async deletePrescription(doctorId, prescriptionId) {
+    const result = await this.database.query(
+      `DELETE FROM \`${this.prescriptionsTable}\` WHERE MedicationId = ? AND doctor_user_id = ?`,
+      [prescriptionId, doctorId],
+    );
+    return result.affectedRows > 0;
+  }
+
+  async addPrescriptionAttachment(doctorId, prescriptionId, { name, type, data }) {
+    const fileName = typeof name === 'string' ? name.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+    const contentType = typeof type === 'string' ? type.toLowerCase() : '';
+    if (!fileName || fileName.length > 255) throw new Error('Enter a valid attachment file name.');
+    if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(contentType)) {
+      throw new Error('Attachments must be a PDF or image file.');
+    }
+    if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 20 * 1024 * 1024) {
+      throw new Error('Each attachment must be between 1 byte and 20 MB.');
+    }
+    const prescriptionRows = await this.database.query(
+      `SELECT MedicationId FROM \`${this.prescriptionsTable}\` WHERE MedicationId = ? AND doctor_user_id = ?`,
+      [prescriptionId, doctorId],
+    );
+    if (!prescriptionRows[0]) return null;
+    const countRows = await this.database.query(
+      `SELECT COUNT(*) AS attachment_count FROM \`${this.attachmentsTable}\` WHERE prescription_id = ?`,
+      [prescriptionId],
+    );
+    if (Number(countRows[0].attachment_count) >= 5) throw new Error('A prescription can have at most 5 attachments.');
+    const id = randomUUID();
+    await this.database.query(`
+      INSERT INTO \`${this.attachmentsTable}\` (AttachId, prescription_id, file_name, content_type, file_size, file_data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [id, prescriptionId, fileName, contentType, data.length, data]);
+    return { id, name: fileName, type: contentType, size: data.length };
+  }
+
+  async getPrescriptionAttachment(doctorId, prescriptionId, attachmentId) {
+    const rows = await this.database.query(`
+      SELECT attachment.file_name, attachment.content_type, attachment.file_data
+      FROM \`${this.attachmentsTable}\` AS attachment
+      JOIN \`${this.prescriptionsTable}\` AS prescription ON prescription.MedicationId = attachment.prescription_id
+      WHERE prescription.MedicationId = ? AND prescription.doctor_user_id = ? AND attachment.AttachId = ?
+    `, [prescriptionId, doctorId, attachmentId]);
+    return rows[0] ? { name: rows[0].file_name, type: rows[0].content_type, data: rows[0].file_data } : null;
+  }
+
+  async deletePrescriptionAttachment(doctorId, prescriptionId, attachmentId) {
+    const result = await this.database.query(`
+      DELETE attachment FROM \`${this.attachmentsTable}\` AS attachment
+      JOIN \`${this.prescriptionsTable}\` AS prescription ON prescription.MedicationId = attachment.prescription_id
+      WHERE prescription.MedicationId = ? AND prescription.doctor_user_id = ? AND attachment.AttachId = ?
+    `, [prescriptionId, doctorId, attachmentId]);
+    return result.affectedRows > 0;
   }
 
   async changePassword(token, password) {

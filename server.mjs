@@ -97,6 +97,17 @@ async function readJson(request) {
   }
 }
 
+async function readBuffer(request, maxBytes) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) throw Object.assign(new Error('Request body too large.'), { status: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 function readSessionToken(request) {
   const cookies = (request.headers.cookie || '').split(';');
   const cookie = cookies.map((item) => item.trim()).find((item) => item.startsWith(`${cookieName}=`));
@@ -314,6 +325,188 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: error.message });
       }
       return;
+    }
+
+    if (url.pathname === '/api/appointments' && ['GET', 'POST'].includes(request.method)) {
+      const session = await requestUser(request);
+      if (!session || (request.method === 'GET'
+        ? !['doctor', 'superadmin'].includes(session.user.role)
+        : session.user.role !== 'doctor')) {
+        sendJson(response, 403, { error: 'Doctor access required for appointments.' });
+        return;
+      }
+      if (request.method === 'GET') {
+        const doctorId = session.user.role === 'doctor' ? session.user.id : null;
+        sendJson(response, 200, { appointments: await store.listAppointments(doctorId) });
+        return;
+      }
+      const body = await readJson(request);
+      try {
+        const appointment = await store.createAppointment(session.user.id, body);
+        if (!appointment) {
+          sendJson(response, 404, { error: 'Patient not found.' });
+          return;
+        }
+        sendJson(response, 201, { appointment });
+      } catch (error) {
+        if (error.code) throw error;
+        sendJson(response, 400, { error: error.message });
+      }
+      return;
+    }
+
+    const appointmentMatch = url.pathname.match(/^\/api\/appointments\/([^/]+)$/);
+    if (appointmentMatch && ['PUT', 'DELETE'].includes(request.method)) {
+      const session = await requestUser(request);
+      if (!session || session.user.role !== 'doctor') {
+        sendJson(response, 403, { error: 'Doctor access required for appointments.' });
+        return;
+      }
+      let appointmentId;
+      try {
+        appointmentId = decodeURIComponent(appointmentMatch[1]);
+      } catch {
+        sendJson(response, 400, { error: 'Invalid appointment ID.' });
+        return;
+      }
+      if (request.method === 'DELETE') {
+        const deleted = await store.deleteAppointment(session.user.id, appointmentId);
+        sendJson(response, deleted ? 200 : 404, deleted ? { ok: true } : { error: 'Appointment not found.' });
+        return;
+      }
+      const body = await readJson(request);
+      try {
+        const appointment = await store.updateAppointment(session.user.id, appointmentId, body);
+        if (!appointment) {
+          sendJson(response, 404, { error: 'Appointment or patient not found.' });
+          return;
+        }
+        sendJson(response, 200, { appointment });
+      } catch (error) {
+        if (error.code) throw error;
+        sendJson(response, 400, { error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/prescriptions' && ['GET', 'POST'].includes(request.method)) {
+      const session = await requestUser(request);
+      if (!session || (request.method === 'GET'
+        ? !['doctor', 'superadmin'].includes(session.user.role)
+        : session.user.role !== 'doctor')) {
+        sendJson(response, 403, { error: 'Doctor access required for prescriptions.' });
+        return;
+      }
+      if (request.method === 'GET') {
+        const doctorId = session.user.role === 'doctor' ? session.user.id : null;
+        sendJson(response, 200, { prescriptions: await store.listPrescriptions(doctorId) });
+        return;
+      }
+      const body = await readJson(request);
+      try {
+        const prescription = await store.createPrescription(session.user.id, body);
+        if (!prescription) {
+          sendJson(response, 404, { error: 'Patient not found.' });
+          return;
+        }
+        sendJson(response, 201, { prescription });
+      } catch (error) {
+        if (error.code) throw error;
+        sendJson(response, 400, { error: error.message });
+      }
+      return;
+    }
+
+    const prescriptionMatch = url.pathname.match(/^\/api\/prescriptions\/([^/]+)$/);
+    if (prescriptionMatch && ['PUT', 'DELETE'].includes(request.method)) {
+      const session = await requestUser(request);
+      if (!session || session.user.role !== 'doctor') {
+        sendJson(response, 403, { error: 'Doctor access required for prescriptions.' });
+        return;
+      }
+      let prescriptionId;
+      try {
+        prescriptionId = decodeURIComponent(prescriptionMatch[1]);
+      } catch {
+        sendJson(response, 400, { error: 'Invalid prescription ID.' });
+        return;
+      }
+      if (request.method === 'DELETE') {
+        const deleted = await store.deletePrescription(session.user.id, prescriptionId);
+        sendJson(response, deleted ? 200 : 404, deleted ? { ok: true } : { error: 'Prescription not found.' });
+        return;
+      }
+      const body = await readJson(request);
+      try {
+        const prescription = await store.updatePrescription(session.user.id, prescriptionId, body);
+        if (!prescription) {
+          sendJson(response, 404, { error: 'Prescription or patient not found.' });
+          return;
+        }
+        sendJson(response, 200, { prescription });
+      } catch (error) {
+        if (error.code) throw error;
+        sendJson(response, 400, { error: error.message });
+      }
+      return;
+    }
+
+    const attachmentMatch = url.pathname.match(/^\/api\/prescriptions\/([^/]+)\/attachments(?:\/([^/]+))?$/);
+    if (attachmentMatch) {
+      const session = await requestUser(request);
+      const canAccessAttachment = session && (session.user.role === 'doctor'
+        || (session.user.role === 'superadmin' && request.method === 'GET'));
+      if (!canAccessAttachment) {
+        sendJson(response, 403, { error: 'Doctor access required for prescription attachments.' });
+        return;
+      }
+      let prescriptionId;
+      let attachmentId;
+      try {
+        prescriptionId = decodeURIComponent(attachmentMatch[1]);
+        attachmentId = attachmentMatch[2] ? decodeURIComponent(attachmentMatch[2]) : '';
+      } catch {
+        sendJson(response, 400, { error: 'Invalid prescription attachment ID.' });
+        return;
+      }
+      if (request.method === 'POST' && !attachmentId) {
+        const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        const name = url.searchParams.get('name') || '';
+        try {
+          const data = await readBuffer(request, 20 * 1024 * 1024);
+          const attachment = await store.addPrescriptionAttachment(session.user.id, prescriptionId, { name, type: contentType, data });
+          if (!attachment) {
+            sendJson(response, 404, { error: 'Prescription not found.' });
+            return;
+          }
+          sendJson(response, 201, { attachment });
+        } catch (error) {
+          if (error.code) throw error;
+          sendJson(response, error.status || 400, { error: error.message });
+        }
+        return;
+      }
+      if (request.method === 'GET' && attachmentId) {
+        const attachment = await store.getPrescriptionAttachment(session.user.id, prescriptionId, attachmentId);
+        if (!attachment) {
+          sendJson(response, 404, { error: 'Prescription attachment not found.' });
+          return;
+        }
+        const safeName = attachment.name.replace(/["\\\r\n]/g, '_');
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Type': attachment.type,
+          'Content-Disposition': `inline; filename="${safeName}"`,
+          'X-Content-Type-Options': 'nosniff',
+        });
+        response.end(attachment.data);
+        return;
+      }
+      if (request.method === 'DELETE' && attachmentId) {
+        const deleted = await store.deletePrescriptionAttachment(session.user.id, prescriptionId, attachmentId);
+        sendJson(response, deleted ? 200 : 404, deleted ? { ok: true } : { error: 'Prescription attachment not found.' });
+        return;
+      }
     }
 
     const resetDoctorMatch = url.pathname.match(/^\/api\/admin\/doctors\/([^/]+)\/reset-password$/);

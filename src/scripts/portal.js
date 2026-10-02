@@ -1,62 +1,7 @@
-const storageKey = 'docvisitmobile-demo-records-v1';
-const existingDoctorIds = new Set(['moumitasarkar', 'romitasarkar']);
 const today = new Date();
 const isoDate = (date) => date.toISOString().slice(0, 10);
 const addDays = (days) => { const date = new Date(); date.setDate(date.getDate() + days); return isoDate(date); };
-function createExistingDoctorSampleRecords() {
-  const appointments = [
-    { id: 'ap-1', doctorId: 'moumitasarkar', patientId: 'pt-1', date: addDays(0), time: '09:30', type: 'Annual check-up', room: 'Room 02', status: 'Checked in' },
-    { id: 'ap-2', doctorId: 'moumitasarkar', patientId: 'pt-2', date: addDays(0), time: '10:15', type: 'Follow-up', room: 'Room 01', status: 'Confirmed' },
-    { id: 'ap-3', doctorId: 'moumitasarkar', patientId: 'pt-3', date: addDays(0), time: '11:00', type: 'Consultation', room: 'Room 03', status: 'Confirmed' },
-    { id: 'ap-4', doctorId: 'romitasarkar', patientId: 'pt-4', date: addDays(0), time: '13:30', type: 'Medication review', room: 'Room 02', status: 'Pending' },
-    { id: 'ap-5', doctorId: 'romitasarkar', patientId: 'pt-5', date: addDays(1), time: '09:00', type: 'Follow-up', room: 'Room 01', status: 'Confirmed' },
-    { id: 'ap-6', doctorId: 'romitasarkar', patientId: 'pt-6', date: addDays(2), time: '10:30', type: 'Consultation', room: 'Room 03', status: 'Pending' },
-  ];
-  const prescriptions = [
-    { id: 'rx-1', doctorId: 'moumitasarkar', patientId: 'pt-1', medication: 'Atorvastatin', directions: '10 mg · Once daily', refills: 2, status: 'Active', expires: addDays(12) },
-    { id: 'rx-2', doctorId: 'moumitasarkar', patientId: 'pt-2', medication: 'Lisinopril', directions: '5 mg · Once daily', refills: 0, status: 'Renewal due', expires: addDays(4) },
-    { id: 'rx-3', doctorId: 'romitasarkar', patientId: 'pt-3', medication: 'Metformin', directions: '500 mg · Twice daily', refills: 1, status: 'Active', expires: addDays(30) },
-    { id: 'rx-4', doctorId: 'romitasarkar', patientId: 'pt-4', medication: 'Amlodipine', directions: '5 mg · Once daily', refills: 0, status: 'Renewal due', expires: addDays(7) },
-  ];
-  return { appointments, prescriptions };
-}
-function loadRecords() {
-  let saved;
-  try {
-    saved = JSON.parse(localStorage.getItem(storageKey));
-  } catch {
-    /* Start with empty record collections when stored data cannot be read. */
-  }
-  const records = saved && ['patients', 'appointments', 'prescriptions'].every((key) => Array.isArray(saved[key]))
-    ? saved
-    : { patients: [], appointments: [], prescriptions: [] };
-  records.patients = [];
-
-  for (const appointment of records.appointments) {
-    if (/^ap-[1-6]$/.test(appointment.id) && !appointment.doctorId) {
-      appointment.doctorId = Number(appointment.id.slice(3)) <= 3 ? 'moumitasarkar' : 'romitasarkar';
-    }
-  }
-  for (const prescription of records.prescriptions) {
-    if (/^rx-[1-4]$/.test(prescription.id) && !prescription.doctorId) {
-      prescription.doctorId = Number(prescription.id.slice(3)) <= 2 ? 'moumitasarkar' : 'romitasarkar';
-    }
-  }
-
-  if (!saved?.existingDoctorSampleDataRestored) {
-    const samples = createExistingDoctorSampleRecords();
-    for (const key of ['appointments', 'prescriptions']) {
-      const existingIds = new Set(records[key].map((record) => record.id));
-      records[key].push(...samples[key].filter((record) => !existingIds.has(record.id)));
-    }
-    records.existingDoctorSampleDataRestored = true;
-  }
-  try {
-    localStorage.setItem(storageKey, JSON.stringify(records));
-  } catch { /* Keep this page session usable. */ }
-  return records;
-}
-const records = loadRecords();
+const records = { patients: [], appointments: [], prescriptions: [] };
 let currentView = 'dashboard';
 let patientDisplayMode = 'grid';
 let patientSearch = '';
@@ -67,7 +12,6 @@ let historyPatientId = null;
 let pendingAppointmentDraft = null;
 let query = '';
 let appointmentFilter = 'all';
-let attachmentDbPromise;
 let activeAttachmentUrls = [];
 const byId = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -77,10 +21,9 @@ const dateLabel = (value, options = { month: 'short', day: 'numeric' }) => new D
 const isToday = (value) => value === isoDate(today);
 const matchesQuery = (...values) => !query || values.some((value) => String(value ?? '').toLowerCase().includes(query));
 function isDoctorRecord(record, doctorId = currentUser?.id) {
-  if (!currentUser || currentUser.role === 'superadmin') {
-    return doctorId ? (record.doctorId === doctorId || (!record.doctorId && existingDoctorIds.has(doctorId))) : true;
-  }
-  return record.doctorId === currentUser.id || (!record.doctorId && existingDoctorIds.has(currentUser.id));
+  if (!currentUser) return false;
+  if (currentUser.role === 'superadmin') return doctorId ? record.doctorId === doctorId : true;
+  return record.doctorId === currentUser.id;
 }
 function doctorPatientsForCurrentUser(doctorId = currentUser?.id) {
   if (!currentUser || currentUser.role === 'superadmin') {
@@ -96,6 +39,9 @@ function doctorPatientsForCurrentUser(doctorId = currentUser?.id) {
     return appointmentMatch || prescriptionMatch;
   });
 }
+function appointmentsForCurrentUser() {
+  return records.appointments.filter((item) => patientFor(item.patientId) && isDoctorRecord(item));
+}
 async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -106,72 +52,44 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(result.error || 'The request could not be completed.');
   return result;
 }
-function saveRecords() {
-  try {
-    localStorage.setItem(storageKey, JSON.stringify({
-      ...records,
-      patients: [],
-    }));
-  } catch { /* Keep this page session usable. */ }
-}
 async function loadPatients() {
   const { patients } = await api('/api/patients');
   records.patients = patients;
-  saveRecords();
 }
-function openAttachmentDb() {
-  if (!attachmentDbPromise) {
-    attachmentDbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open('docvisitmobile-prescription-attachments', 1);
-      request.onupgradeneeded = () => request.result.createObjectStore('attachments', { keyPath: 'id' });
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error('Could not open attachment storage.'));
-    });
-  }
-  return attachmentDbPromise;
+async function loadAppointments() {
+  const { appointments } = await api('/api/appointments');
+  records.appointments = appointments;
 }
-async function putAttachment(attachment) {
-  const database = await openAttachmentDb();
-  await new Promise((resolve, reject) => {
-    const transaction = database.transaction('attachments', 'readwrite');
-    transaction.objectStore('attachments').put(attachment);
-    transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error || new Error('Could not save attachment.'));
-    transaction.onabort = () => reject(transaction.error || new Error('Attachment save was cancelled.'));
-  });
+async function loadPrescriptions() {
+  const { prescriptions } = await api('/api/prescriptions');
+  records.prescriptions = prescriptions;
 }
-async function getAttachment(id) {
-  const database = await openAttachmentDb();
-  return new Promise((resolve, reject) => {
-    const request = database.transaction('attachments', 'readonly').objectStore('attachments').get(id);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('Could not load attachment.'));
-  });
-}
-async function deleteAttachment(id) {
-  const database = await openAttachmentDb();
-  await new Promise((resolve, reject) => {
-    const transaction = database.transaction('attachments', 'readwrite');
-    transaction.objectStore('attachments').delete(id);
-    transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error || new Error('Could not delete attachment.'));
-  });
-}
-async function storePrescriptionFiles(prescriptionId, files) {
-  if (files.length > 5) throw new Error('A prescription can have at most 5 attachments.');
+async function storePrescriptionFiles(prescriptionId, files, existingCount = 0) {
+  if (files.length + existingCount > 5) throw new Error('A prescription can have at most 5 attachments.');
   const saved = [];
-  try {
-    for (const [index, file] of files.entries()) {
-      if (file.size > 20 * 1024 * 1024) throw new Error('Each attachment must be 20 MB or smaller.');
-      const id = `${prescriptionId}-${index}-${crypto.randomUUID()}`;
-      await putAttachment({ id, blob: file });
-      saved.push({ id, name: file.name, type: file.type, size: file.size });
-    }
-    return saved;
-  } catch (error) {
-    await Promise.all(saved.map((item) => deleteAttachment(item.id).catch(() => {})));
-    throw error;
+  for (const file of files) {
+    if (file.size > 20 * 1024 * 1024) throw new Error('Each attachment must be 20 MB or smaller.');
+    const extension = file.name.split('.').pop().toLowerCase();
+    const contentType = file.type || ({ pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' })[extension] || '';
+    const { attachment } = await api(`/api/prescriptions/${encodeURIComponent(prescriptionId)}/attachments?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      body: file,
+      headers: { 'Content-Type': contentType },
+    });
+    saved.push(attachment);
   }
+  return saved;
+}
+async function getAttachment(prescriptionId, attachmentId) {
+  const response = await fetch(`/api/prescriptions/${encodeURIComponent(prescriptionId)}/attachments/${encodeURIComponent(attachmentId)}`, { credentials: 'same-origin' });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || 'Could not load attachment.');
+  }
+  return response.blob();
+}
+async function deleteAttachment(prescriptionId, attachmentId) {
+  await api(`/api/prescriptions/${encodeURIComponent(prescriptionId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' });
 }
 function clearModal() {
   activeAttachmentUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -184,7 +102,7 @@ function badge(status) {
 }
 function renderMetrics() {
   const scopedPatients = doctorPatientsForCurrentUser();
-  const scopedAppointments = records.appointments.filter((item) => isDoctorRecord(item));
+  const scopedAppointments = appointmentsForCurrentUser();
   const appointmentsToday = scopedAppointments.filter((item) => isToday(item.date) && item.status !== 'Cancelled');
   const newPatientsToday = scopedPatients.filter((patient) => patient.createdAt === isoDate(today)).length;
   const pendingAppointmentsToday = appointmentsToday.filter((item) => item.status === 'Pending').length;
@@ -192,7 +110,7 @@ function renderMetrics() {
   byId('metric-grid').innerHTML = metrics.map(([label, count, icon, modifier]) => `<article class="metric-card"><div class="metric-top"><span>${label}</span><span class="metric-icon ${modifier}">${icon}</span></div><div class="metric-value">${count}</div></article>`).join('');
 }
 function renderDashboard() {
-  const scopedAppointments = records.appointments.filter((item) => isDoctorRecord(item));
+  const scopedAppointments = appointmentsForCurrentUser();
   const scopedPrescriptions = records.prescriptions.filter((item) => isDoctorRecord(item));
   const appointments = scopedAppointments.filter((item) => isToday(item.date) && item.status !== 'Cancelled').sort((a, b) => a.time.localeCompare(b.time));
   byId('today-appointments').innerHTML = appointments.length ? appointments.map((item) => { const patient = patientFor(item.patientId); if (!patient) return ''; return `<article class="appointment-item"><span class="appointment-time">${escapeHtml(item.time)}</span><div class="appointment-person"><span class="avatar">${escapeHtml(initialsFor(patient))}</span><span><strong>${escapeHtml(patient.name)}</strong><small>${escapeHtml(item.type)}</small></span></div><div class="appointment-meta"><span class="appointment-room">${escapeHtml(item.room || 'Room 01')}</span>${badge(item.status)}</div></article>`; }).join('') : '<p class="empty-state">No appointments scheduled for today.</p>';
@@ -202,7 +120,7 @@ function renderDashboard() {
   byId('patient-strip').innerHTML = doctorPatientsForCurrentUser().slice(-4).reverse().map((patient) => `<div class="patient-chip"><span class="avatar">${escapeHtml(initialsFor(patient))}</span><span><strong>${escapeHtml(patient.name)}</strong><small>Last visit ${dateLabel(patient.lastVisit)}</small></span></div>`).join('');
 }
 function renderAppointments() {
-  const filtered = records.appointments.filter((item) => { const patient = patientFor(item.patientId); const dateMatch = appointmentFilter === 'all' || (appointmentFilter === 'today' && isToday(item.date)) || (appointmentFilter === 'upcoming' && item.date >= isoDate(today)); return patient && dateMatch && matchesQuery(patient.name, item.type, item.status, item.date) && isDoctorRecord(item); }).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const filtered = appointmentsForCurrentUser().filter((item) => { const patient = patientFor(item.patientId); const dateMatch = appointmentFilter === 'all' || (appointmentFilter === 'today' && isToday(item.date)) || (appointmentFilter === 'upcoming' && item.date >= isoDate(today)); return dateMatch && matchesQuery(patient.name, item.type, item.status, item.date); }).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   byId('appointments-rows').innerHTML = filtered.map((item) => { const patient = patientFor(item.patientId); return `<tr><td><span class="table-person"><span class="avatar">${escapeHtml(initialsFor(patient))}</span><strong>${escapeHtml(patient.name)}</strong></span></td><td>${dateLabel(item.date, { month: 'short', day: 'numeric', year: 'numeric' })}<span class="table-subtext">${escapeHtml(item.time)}</span></td><td>${escapeHtml(item.type)}</td><td><label class="sr-only" for="status-${escapeHtml(item.id)}">Appointment status for ${escapeHtml(patient.name)}</label><select class="status-select" id="status-${escapeHtml(item.id)}" data-status-id="${escapeHtml(item.id)}">${['Pending', 'Confirmed', 'Checked in', 'Completed', 'Cancelled'].map((status) => `<option${item.status === status ? ' selected' : ''}>${status}</option>`).join('')}</select></td><td><span class="appointment-row-actions"><button class="row-action" type="button" data-edit-appointment="${escapeHtml(item.id)}" aria-label="Edit appointment for ${escapeHtml(patient.name)}" title="Edit appointment">✎</button><button class="row-action" type="button" data-add-appointment-prescription="${escapeHtml(item.id)}" aria-label="Add prescription for ${escapeHtml(patient.name)}" title="Add prescription">＋</button><button class="row-action" type="button" data-delete-appointment="${escapeHtml(item.id)}" aria-label="Delete appointment for ${escapeHtml(patient.name)}" title="Delete appointment">×</button></span></td></tr>`; }).join('');
   byId('appointments-empty').hidden = filtered.length > 0;
 }
@@ -290,25 +208,25 @@ async function showPrescriptionAttachments(prescriptionId) {
   if (!prescription) return;
   clearModal();
   const attachments = await Promise.all((prescription.attachments || []).map(async (item) => {
-    const stored = await getAttachment(item.id);
     const deleteAction = currentUser?.role === 'doctor' ? `<button class="icon-button attachment-delete-button" type="button" data-delete-attachment="${escapeHtml(item.id)}" aria-label="Delete ${escapeHtml(item.name)}" title="Delete file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg></button>` : '';
-    if (!stored) return `<li><span class="attachment-name"><strong>${escapeHtml(item.name)}</strong><small>File unavailable</small></span><span class="attachment-actions">${deleteAction}</span></li>`;
-    const url = URL.createObjectURL(stored.blob);
+    const blob = await getAttachment(prescription.id, item.id);
+    const url = URL.createObjectURL(blob);
     activeAttachmentUrls.push(url);
     return `<li><span class="attachment-name"><strong>${escapeHtml(item.name)}</strong><small>${Math.max(1, Math.round(item.size / 1024))} KB</small></span><span class="attachment-actions"><button class="icon-button" type="button" data-preview-attachment="${escapeHtml(item.id)}" aria-label="View ${escapeHtml(item.name)}" title="View file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button><a class="icon-button" href="${url}" download="${escapeHtml(item.name)}" aria-label="Download ${escapeHtml(item.name)}" title="Download file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 17v4h14v-4"/></svg></a>${deleteAction}</span></li>`;
   }));
   byId('modal-root').innerHTML = `<div class="modal-layer" data-close-modal><section class="modal" role="dialog" aria-modal="true" aria-labelledby="attachment-title"><div class="modal-header"><div><p class="eyebrow">PRESCRIPTION FILES</p><h2 id="attachment-title">${escapeHtml(prescription.medication)}</h2></div><button class="modal-close" type="button" data-close-modal aria-label="Close dialog">×</button></div>${attachments.length ? `<ul class="attachment-list">${attachments.join('')}</ul>` : '<p class="history-empty">No files are attached to this prescription.</p>'}<div class="modal-actions"><button class="button button--secondary" type="button" data-close-modal>Close</button></div></section></div>`;
 }
 async function showAttachmentPreview(attachmentId) {
-  const attachment = await getAttachment(attachmentId);
-  if (!attachment) throw new Error('Attachment is unavailable.');
   const prescription = records.prescriptions.find((item) => item.attachments?.some((file) => file.id === attachmentId));
+  if (!prescription) throw new Error('Prescription attachment is unavailable.');
+  const attachment = prescription.attachments.find((item) => item.id === attachmentId);
+  const blob = await getAttachment(prescription.id, attachmentId);
   clearModal();
-  const url = URL.createObjectURL(attachment.blob);
+  const url = URL.createObjectURL(blob);
   activeAttachmentUrls.push(url);
-  const preview = attachment.blob.type.startsWith('image/')
+  const preview = blob.type.startsWith('image/')
     ? `<img class="attachment-preview" src="${url}" alt="${escapeHtml(attachment.name)}" />`
-    : attachment.blob.type === 'application/pdf'
+    : blob.type === 'application/pdf'
       ? `<iframe class="attachment-pdf-preview" src="${url}" title="${escapeHtml(attachment.name)}"></iframe>`
       : '<p class="history-empty">This file type can be downloaded but not previewed here.</p>';
   byId('modal-root').innerHTML = `<div class="modal-layer" data-close-modal><section class="modal attachment-preview-modal" role="dialog" aria-modal="true" aria-labelledby="attachment-preview-title"><div class="modal-header"><div><p class="eyebrow">FILE PREVIEW</p><h2 id="attachment-preview-title">${escapeHtml(attachment.name)}</h2></div><button class="modal-close" type="button" data-close-modal aria-label="Close dialog">×</button></div>${preview}<div class="modal-actions"><button class="button button--secondary" type="button" data-prescription-attachments="${escapeHtml(prescription?.id || '')}">Back to files</button><span class="attachment-actions"><a class="icon-button" href="${url}" download="${escapeHtml(attachment.name)}" aria-label="Download ${escapeHtml(attachment.name)}" title="Download file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 17v4h14v-4"/></svg></a>${currentUser?.role === 'doctor' ? `<button class="icon-button attachment-delete-button" type="button" data-delete-attachment="${escapeHtml(attachmentId)}" aria-label="Delete ${escapeHtml(attachment.name)}" title="Delete file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16m-10 4v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg></button>` : ''}</span></div></section></div>`;
@@ -385,10 +303,13 @@ async function showApp(user) {
   currentUser = user;
   previewDoctorId = null;
   currentView = user.role === 'superadmin' ? 'doctors' : 'patients';
+  records.patients = [];
+  records.appointments = [];
+  records.prescriptions = [];
   byId('login-screen').hidden = true;
   byId('setup-screen').hidden = true;
   byId('password-screen').hidden = true;
-  byId('app-shell').hidden = false;
+  byId('app-shell').hidden = true;
   byId('today-label').textContent = today.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   byId('account-name').textContent = user.name;
   byId('account-role').textContent = user.role === 'superadmin' ? 'Superadmin' : user.specialty || 'Doctor';
@@ -398,13 +319,14 @@ async function showApp(user) {
   byId('patient-storage-error').hidden = true;
   try {
     await loadPatients();
+    await loadAppointments();
+    await loadPrescriptions();
   } catch (error) {
-    records.patients = [];
-    saveRecords();
-    byId('patient-storage-error').textContent = `Patient records could not be loaded from the server: ${error.message}`;
+    byId('patient-storage-error').textContent = `Patient, appointment, or prescription records could not be loaded from the server: ${error.message}`;
     byId('patient-storage-error').hidden = false;
   }
   render();
+  byId('app-shell').hidden = false;
 }
 function showLogin() {
   byId('login-screen').hidden = false;
@@ -413,6 +335,9 @@ function showLogin() {
   byId('app-shell').hidden = true;
   currentUser = null;
   previewDoctorId = null;
+  records.patients = [];
+  records.appointments = [];
+  records.prescriptions = [];
   byId('login-date').textContent = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase();
 }
 function showPasswordChange(user) {
@@ -653,9 +578,8 @@ document.addEventListener('click', async (event) => {
       window.alert('This prescription file is no longer available to delete.');
     } else if (window.confirm('Delete this prescription file?')) {
       try {
-        await deleteAttachment(attachmentId);
+        await deleteAttachment(prescription.id, attachmentId);
         prescription.attachments = prescription.attachments.filter((file) => file.id !== attachmentId);
-        saveRecords();
         await showPrescriptionAttachments(prescription.id);
       } catch (error) {
         window.alert(error.message);
@@ -697,8 +621,27 @@ document.addEventListener('click', async (event) => {
     if (byId('modal-root').querySelector('[data-continue-appointment]')) pendingAppointmentDraft = null;
     clearModal();
   }
-  if (target.dataset.deleteAppointment && window.confirm('Delete this appointment?')) { records.appointments = records.appointments.filter((item) => item.id !== target.dataset.deleteAppointment); saveRecords(); render(); }
-  if (target.dataset.deletePrescription && window.confirm('Delete this prescription?')) { const prescription = records.prescriptions.find((item) => item.id === target.dataset.deletePrescription); for (const attachment of prescription?.attachments || []) await deleteAttachment(attachment.id).catch(() => {}); records.prescriptions = records.prescriptions.filter((item) => item.id !== target.dataset.deletePrescription); saveRecords(); render(); }
+  if (target.dataset.deleteAppointment && window.confirm('Delete this appointment?')) {
+    try {
+      await api(`/api/appointments/${encodeURIComponent(target.dataset.deleteAppointment)}`, { method: 'DELETE' });
+      records.appointments = records.appointments.filter((item) => item.id !== target.dataset.deleteAppointment);
+      records.prescriptions.forEach((item) => {
+        if (item.appointmentId === target.dataset.deleteAppointment) item.appointmentId = null;
+      });
+      render();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+  if (target.dataset.deletePrescription && window.confirm('Delete this prescription?')) {
+    try {
+      await api(`/api/prescriptions/${encodeURIComponent(target.dataset.deletePrescription)}`, { method: 'DELETE' });
+      records.prescriptions = records.prescriptions.filter((item) => item.id !== target.dataset.deletePrescription);
+      render();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
 });
 document.addEventListener('submit', async (event) => {
   if (event.target.id === 'login-form') {
@@ -806,22 +749,41 @@ document.addEventListener('submit', async (event) => {
     return;
   }
   if (form.dataset.form === 'appointment') {
-    const appointmentId = data.appointmentId;
-    if (form.dataset.appointmentEdit === 'true') {
-      const appointment = records.appointments.find((item) => item.id === appointmentId);
-      if (!appointment || !isDoctorRecord(appointment)) {
-        const errorElement = document.createElement('p');
-        errorElement.className = 'login-error';
-        errorElement.setAttribute('role', 'alert');
-        errorElement.textContent = 'This appointment is no longer available to edit.';
-        form.prepend(errorElement);
-        return;
-      }
-      appointment.type = data.type;
-      appointment.time = data.time;
-      appointment.status = data.status;
-    } else {
-      records.appointments.push({ id: `ap-${Date.now()}`, ...data, status: 'Confirmed', doctorId: currentUser?.id || null });
+    const existingAppointment = data.appointmentId
+      ? records.appointments.find((item) => item.id === data.appointmentId && isDoctorRecord(item))
+      : null;
+    if (data.appointmentId && !existingAppointment) {
+      const errorElement = document.createElement('p');
+      errorElement.className = 'login-error';
+      errorElement.setAttribute('role', 'alert');
+      errorElement.textContent = 'This appointment is no longer available to edit.';
+      form.prepend(errorElement);
+      return;
+    }
+    const appointmentValues = {
+      patientId: data.patientId,
+      date: data.date || existingAppointment?.date,
+      time: data.time,
+      type: data.type,
+      room: data.room || existingAppointment?.room || '',
+      status: existingAppointment ? data.status : 'Confirmed',
+    };
+    try {
+      const result = await api(existingAppointment
+        ? `/api/appointments/${encodeURIComponent(existingAppointment.id)}`
+        : '/api/appointments', {
+        method: existingAppointment ? 'PUT' : 'POST',
+        body: JSON.stringify(appointmentValues),
+      });
+      if (existingAppointment) Object.assign(existingAppointment, result.appointment);
+      else records.appointments.push(result.appointment);
+    } catch (error) {
+      const errorElement = document.createElement('p');
+      errorElement.className = 'login-error';
+      errorElement.setAttribute('role', 'alert');
+      errorElement.textContent = error.message;
+      form.prepend(errorElement);
+      return;
     }
     if (data.returnToHistory === 'true') {
       historyPatientId = data.patientId;
@@ -860,7 +822,6 @@ document.addEventListener('submit', async (event) => {
     currentView = 'patients';
   }
   if (form.dataset.form === 'prescription') {
-    const prescriptionId = data.prescriptionId || `rx-${Date.now()}`;
     const selectedFiles = [...form.querySelector('#prescription-files').files, ...form.querySelector('#prescription-camera').files];
     try {
       const existingPrescription = data.prescriptionId
@@ -874,7 +835,9 @@ document.addEventListener('submit', async (event) => {
         form.prepend(errorElement);
         return;
       }
-      const newAttachments = selectedFiles.length ? await storePrescriptionFiles(prescriptionId, selectedFiles) : [];
+      if (selectedFiles.length + (existingPrescription?.attachments.length || 0) > 5) {
+        throw new Error('A prescription can have at most 5 attachments.');
+      }
       const prescriptionData = {
         patientId: data.patientId,
         appointmentId: data.appointmentId,
@@ -884,11 +847,34 @@ document.addEventListener('submit', async (event) => {
         expires: data.expires,
         notes: data.notes,
         status: data.status || 'Active',
-        attachments: [...(existingPrescription?.attachments || []), ...newAttachments],
-        doctorId: existingPrescription?.doctorId || currentUser?.id || null,
       };
-      if (existingPrescription) Object.assign(existingPrescription, prescriptionData);
-      else records.prescriptions.push({ id: prescriptionId, ...prescriptionData });
+      const path = existingPrescription
+        ? `/api/prescriptions/${encodeURIComponent(existingPrescription.id)}`
+        : '/api/prescriptions';
+      const result = await api(path, {
+        method: existingPrescription ? 'PUT' : 'POST',
+        body: JSON.stringify(prescriptionData),
+      });
+      const savedPrescription = result.prescription;
+      if (existingPrescription) Object.assign(existingPrescription, savedPrescription);
+      else {
+        records.prescriptions.push(savedPrescription);
+        const prescriptionIdField = document.createElement('input');
+        prescriptionIdField.type = 'hidden';
+        prescriptionIdField.name = 'prescriptionId';
+        prescriptionIdField.value = savedPrescription.id;
+        form.append(prescriptionIdField);
+        form.dataset.prescriptionEdit = 'true';
+      }
+      if (selectedFiles.length) {
+        try {
+          const newAttachments = await storePrescriptionFiles(savedPrescription.id, selectedFiles, savedPrescription.attachments.length);
+          savedPrescription.attachments.push(...newAttachments);
+        } catch (error) {
+          await loadPrescriptions();
+          throw error;
+        }
+      }
       if (data.returnToHistory === 'true') {
         historyPatientId = data.patientId;
         currentView = 'patient-history';
@@ -904,10 +890,26 @@ document.addEventListener('submit', async (event) => {
       return;
     }
   }
-  saveRecords(); clearModal(); render();
+  clearModal(); render();
 });
-document.addEventListener('change', (event) => {
-  if (event.target.matches('[data-status-id]')) { const appointment = records.appointments.find((item) => item.id === event.target.dataset.statusId); if (appointment) appointment.status = event.target.value; saveRecords(); render(); }
+document.addEventListener('change', async (event) => {
+  if (event.target.matches('[data-status-id]')) {
+    const appointment = records.appointments.find((item) => item.id === event.target.dataset.statusId);
+    if (appointment) {
+      const previousStatus = appointment.status;
+      try {
+        const { appointment: updatedAppointment } = await api(`/api/appointments/${encodeURIComponent(appointment.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ ...appointment, status: event.target.value }),
+        });
+        Object.assign(appointment, updatedAppointment);
+      } catch (error) {
+        event.target.value = previousStatus;
+        window.alert(error.message);
+      }
+      render();
+    }
+  }
   if (event.target.id === 'appointment-filter') { appointmentFilter = event.target.value; renderAppointments(); }
   if (event.target.id === 'appointment-patient') {
     const patient = patientFor(event.target.value);

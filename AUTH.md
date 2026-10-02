@@ -11,6 +11,11 @@ For scripted or production bootstrap, set `SUPERADMIN_PASSWORD` in the server en
 
 `.env.local` is excluded from Git. The server stores users and sessions in MariaDB, hashes passwords with scrypt, stores only hashes of session tokens, uses HttpOnly same-site cookies, and expires sessions after 12 hours. Configure the `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` environment variables before starting the server.
 
-This is a local prototype, not a production clinical system. Patient, appointment, and prescription records in the current UI remain sample data in browser storage. Before using real patient information, move all records behind authenticated server APIs, use HTTPS and a managed database, add backups and audit logging, and complete the applicable privacy and security review.
+This remains a prototype, not a production clinical system. Patient and
+prescription records, including prescription attachment files, are stored in
+MariaDB and served through authenticated APIs. Browser-stored appointments and
+prescription samples are discarded and are not imported into MariaDB. Before
+using real patient information, add backups and audit logging, and complete the
+applicable privacy and security review.
 
 For mobile installation and network requirements, see [README.md](./README.md).
