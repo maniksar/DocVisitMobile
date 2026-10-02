@@ -409,7 +409,6 @@ function showLogin() {
   currentUser = null;
   previewDoctorId = null;
   byId('login-date').textContent = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase();
-  byId('login-appointment-count').textContent = String(records.appointments.filter((item) => isToday(item.date) && item.status !== 'Cancelled').length).padStart(2, '0');
 }
 function showPasswordChange(user) {
   currentUser = user;

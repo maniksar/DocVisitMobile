@@ -287,7 +287,7 @@ const highlights = [
 >
   <div class="login-shell" id="login-screen">
     <section class="login-panel" aria-labelledby="login-title">
-      <a class="brand-lockup login-brand" href="/" aria-label="DocPatient home"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <a class="brand-lockup login-brand" href="/" aria-label="MyPatients home"><span class="brand-mark">M</span><span>MyPatients<span class="brand-period">.</span></span></a>
       <div class="login-copy"><p class="eyebrow">DOCTOR WORKSPACE</p><h1 id="login-title">Your Gateway to Patient Care</h1><p>Appointments, patient notes, and prescriptions, together in one clear view.</p></div>
       <form class="login-form" id="login-form">
         <label for="login-user-id">User ID</label><input id="login-user-id" name="userId" type="text" autocomplete="username" required />
@@ -297,20 +297,21 @@ const highlights = [
       </form>
       <p class="demo-notice"><span class="status-dot"></span> Accounts are provisioned by your practice administrator.</p>
     </section>
-    <aside class="login-aside" aria-label="Daily practice overview">
+    <aside class="login-aside login-aside--care" aria-label="Patient care in a clinic">
       <div class="aside-topline"><span id="login-date">TODAY</span><span>YOUR PRACTICE, IN FOCUS</span></div>
-      <div class="aside-content"><p class="aside-kicker">Today at a glance</p><p class="aside-number"><span id="login-appointment-count">00</span><span> appointments</span></p><div class="aside-rule"></div>
-        <div class="aside-appointment"><span class="aside-time">09:30</span><span><strong>Olivia Rhye</strong><small>Annual check-up · Room 02</small></span><span class="aside-status">Arrived</span></div>
-        <div class="aside-appointment"><span class="aside-time">10:15</span><span><strong>Phoenix Baker</strong><small>Follow-up · Room 01</small></span><span class="aside-status aside-status--upcoming">Upcoming</span></div>
-        <div class="aside-appointment"><span class="aside-time">11:00</span><span><strong>Lana Steiner</strong><small>Consultation · Room 03</small></span><span class="aside-status aside-status--upcoming">Upcoming</span></div>
+      <div class="aside-content login-care-content">
+        <p class="aside-kicker">COMPASSIONATE CARE, CONNECTED</p>
+        <h2 class="login-care-heading">Better care starts with being there.</h2>
+        <img class="login-care-image" src="/clinic-care.svg" alt="Doctor listening to a patient during a clinic consultation" width="720" height="540" fetchpriority="high" />
+        <p class="login-care-caption">A more thoughtful way to care for every patient.</p>
       </div>
-      <p class="aside-foot">A considered view of the work that matters.</p>
+      <p class="aside-foot">Here for every visit, every patient, every day.</p>
     </aside>
   </div>
 
   <div class="login-shell password-shell" id="setup-screen" hidden>
     <section class="login-panel" aria-labelledby="setup-title">
-      <a class="brand-lockup" href="/" aria-label="DocPatient home"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <a class="brand-lockup" href="/" aria-label="MyPatients home"><span class="brand-mark">M</span><span>MyPatients<span class="brand-period">.</span></span></a>
       <div class="login-copy"><p class="eyebrow">FIRST-RUN SETUP</p><h1 id="setup-title">Set up your practice admin.</h1><p>Create the initial superadmin password for this local DocVisitMobile instance.</p></div>
       <form class="login-form" id="setup-form">
         <label for="setup-user-id">Superadmin user ID</label><input id="setup-user-id" name="userId" type="text" value="maniksar" readonly />
@@ -326,7 +327,7 @@ const highlights = [
 
   <div class="login-shell password-shell" id="password-screen" hidden>
     <section class="login-panel" aria-labelledby="password-title">
-      <a class="brand-lockup" href="/" aria-label="DocPatient home"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <a class="brand-lockup" href="/" aria-label="MyPatients home"><span class="brand-mark">M</span><span>MyPatients<span class="brand-period">.</span></span></a>
       <div class="login-copy"><p class="eyebrow">FIRST SIGN-IN</p><h1 id="password-title">Set a new password.</h1><p>Your administrator gave you a temporary password. Replace it before continuing.</p></div>
       <form class="login-form" id="password-form">
         <label for="new-password">New password</label><input id="new-password" name="password" type="password" autocomplete="new-password" minlength="12" required />
@@ -341,7 +342,7 @@ const highlights = [
 
   <main class="app-shell" id="app-shell" hidden>
     <aside class="sidebar">
-      <a class="brand-lockup" href="#dashboard" aria-label="DocPatient dashboard"><span class="brand-mark">P</span><span>docpatient<span class="brand-period">.</span></span></a>
+      <a class="brand-lockup" href="#dashboard" aria-label="MyPatients dashboard"><span class="brand-mark">M</span><span>MyPatients<span class="brand-period">.</span></span></a>
       <div class="doctor-identity"><span class="avatar avatar--doctor" id="account-initials">DM</span><span><strong id="account-name">DocVisitMobile</strong><small id="account-role">Practice account</small></span></div>
       <p class="nav-label">WORKSPACE</p>
       <nav class="primary-nav" aria-label="Main navigation">
