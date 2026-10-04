@@ -69,6 +69,7 @@ const mimeTypes = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 const attemptsByAddress = new Map();
+const maxFailedLoginAttempts = 3;
 const maxRequestBytes = 16 * 1024;
 const cookieName = 'docvisit_session';
 
@@ -206,27 +207,30 @@ const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && url.pathname === '/api/auth/login') {
       const address = request.socket.remoteAddress || 'unknown';
+      const body = await readJson(request);
+      const userId = String(body.userId || '').trim();
+      const password = String(body.password || '');
+      const accountKey = userId ? `user:${userId.toLowerCase()}` : `ip:${address}`;
       const now = Date.now();
-      const attempt = attemptsByAddress.get(address);
+      const attempt = attemptsByAddress.get(accountKey);
       if (attempt && attempt.lockedUntil > now) {
         sendJson(response, 429, { error: 'Too many sign-in attempts. Try again later.' });
         return;
       }
 
-      const body = await readJson(request);
-      const user = await store.authenticate(String(body.userId || ''), String(body.password || ''));
-      if (!user) {
-        const current = attempt && now - attempt.startedAt < 15 * 60 * 1000 ? attempt : { count: 0, startedAt: now };
-        current.count += 1;
-        if (current.count >= 5) current.lockedUntil = now + 15 * 60 * 1000;
-        attemptsByAddress.set(address, current);
-        sendJson(response, 401, { error: 'User ID or password is incorrect.' });
+      const user = await store.authenticate(userId, password);
+      if (user) {
+        attemptsByAddress.delete(accountKey);
+        const session = await store.createSession(user.id, config.sessionLifetimeSeconds);
+        sendJson(response, 200, { user }, { 'Set-Cookie': sessionCookie(session.token, config.sessionLifetimeSeconds) });
         return;
       }
 
-      attemptsByAddress.delete(address);
-      const session = await store.createSession(user.id, config.sessionLifetimeSeconds);
-      sendJson(response, 200, { user }, { 'Set-Cookie': sessionCookie(session.token, config.sessionLifetimeSeconds) });
+      const current = attempt && now - attempt.startedAt < 15 * 60 * 1000 ? attempt : { count: 0, startedAt: now };
+      current.count += 1;
+      if (current.count >= maxFailedLoginAttempts) current.lockedUntil = now + 15 * 60 * 1000;
+      attemptsByAddress.set(accountKey, current);
+      sendJson(response, 401, { error: 'User ID or password is incorrect.' });
       return;
     }
 

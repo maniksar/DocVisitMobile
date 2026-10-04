@@ -47,6 +47,72 @@ async function api(baseUrl, path, { method = 'GET', body, cookie } = {}) {
   return { response, result, cookie: response.headers.get('set-cookie')?.split(';')[0] || cookie };
 }
 
+test('user is locked out after 3 consecutive failed login attempts', { skip: !hasTestDatabaseConfig }, async (context) => {
+  const port = await unusedPort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const superadminPassword = randomBytes(28).toString('base64url');
+  const tablePrefix = `test_${randomBytes(8).toString('hex')}`;
+  const databaseOptions = {
+    host: process.env.MARIADB_TEST_HOST || '127.0.0.1',
+    port: Number(process.env.MARIADB_TEST_PORT || 3306),
+    database: process.env.MARIADB_TEST_DATABASE,
+    user: process.env.MARIADB_TEST_USER,
+    password: process.env.MARIADB_TEST_PASSWORD || '',
+    connectionLimit: 2,
+  };
+  const pool = mariadb.createPool(databaseOptions);
+  const child = spawn(process.execPath, ['--env-file-if-exists=.env.local', 'server.mjs'], {
+    cwd: siteDirectory,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      DB_HOST: databaseOptions.host,
+      DB_PORT: String(databaseOptions.port),
+      DB_NAME: databaseOptions.database,
+      DB_USER: databaseOptions.user,
+      DB_PASSWORD: databaseOptions.password,
+      DB_TABLE_PREFIX: tablePrefix,
+      SUPERADMIN_PASSWORD: superadminPassword,
+      PORT: String(port),
+      SERVER_HOST: '127.0.0.1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  context.after(async () => {
+    if (child.exitCode === null) {
+      await new Promise((resolve) => {
+        child.once('exit', resolve);
+        child.kill();
+      });
+    }
+    await pool.query(`DROP TABLE IF EXISTS \
+      \`${tablePrefix}_prescription_attachments\`\n    `);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_prescriptions\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_appointments\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_patients\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_doctors\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_sessions\``);
+    await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_users\``);
+    await pool.end();
+  });
+  await waitUntilReady(child, baseUrl);
+
+  for (let index = 0; index < 3; index += 1) {
+    const failed = await api(baseUrl, '/api/auth/login', {
+      method: 'POST',
+      body: { userId: 'maniksar', password: 'wrong-password' },
+    });
+    assert.equal(failed.response.status, 401);
+  }
+
+  const blocked = await api(baseUrl, '/api/auth/login', {
+    method: 'POST',
+    body: { userId: 'maniksar', password: superadminPassword },
+  });
+  assert.equal(blocked.response.status, 429);
+  assert.equal(blocked.result.error, 'Too many sign-in attempts. Try again later.');
+});
+
 test('superadmin provisions doctors who must change temporary passwords', { skip: !hasTestDatabaseConfig }, async (context) => {
   const port = await unusedPort();
   const baseUrl = `http://127.0.0.1:${port}`;
