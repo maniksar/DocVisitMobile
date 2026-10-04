@@ -736,15 +736,18 @@ export class AuthStore {
     return result.affectedRows > 0;
   }
 
-  async addPrescriptionAttachment(doctorId, prescriptionId, { name, type, data }) {
+  async addPrescriptionAttachment(doctorId, prescriptionId, { name, type, size, data }) {
     const fileName = typeof name === 'string' ? name.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
     const contentType = typeof type === 'string' ? type.toLowerCase() : '';
     if (!fileName || fileName.length > 255) throw new Error('Enter a valid attachment file name.');
     if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(contentType)) {
       throw new Error('Attachments must be a PDF or image file.');
     }
-    if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 20 * 1024 * 1024) {
+    if (!Number.isInteger(size) || size < 1 || size > 20 * 1024 * 1024) {
       throw new Error('Each attachment must be between 1 byte and 20 MB.');
+    }
+    if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 20 * 1024 * 1024 + 64 * 1024) {
+      throw new Error('Each compressed attachment must be no larger than 20 MB.');
     }
     const prescriptionRows = await this.database.query(
       `SELECT MedicationId FROM \`${this.prescriptionsTable}\` WHERE MedicationId = ? AND doctor_user_id = ?`,
@@ -760,18 +763,25 @@ export class AuthStore {
     await this.database.query(`
       INSERT INTO \`${this.attachmentsTable}\` (AttachId, prescription_id, file_name, content_type, file_size, file_data)
       VALUES (?, ?, ?, ?, ?, ?)
-    `, [id, prescriptionId, fileName, contentType, data.length, data]);
-    return { id, name: fileName, type: contentType, size: data.length };
+    `, [id, prescriptionId, fileName, contentType, size, data]);
+    return { id, name: fileName, type: contentType, size };
   }
 
   async getPrescriptionAttachment(doctorId, prescriptionId, attachmentId) {
     const rows = await this.database.query(`
-      SELECT attachment.file_name, attachment.content_type, attachment.file_data
+      SELECT prescription.doctor_user_id, attachment.file_name, attachment.content_type, attachment.file_size, attachment.file_data
       FROM \`${this.attachmentsTable}\` AS attachment
       JOIN \`${this.prescriptionsTable}\` AS prescription ON prescription.MedicationId = attachment.prescription_id
-      WHERE prescription.MedicationId = ? AND prescription.doctor_user_id = ? AND attachment.AttachId = ?
-    `, [prescriptionId, doctorId, attachmentId]);
-    return rows[0] ? { name: rows[0].file_name, type: rows[0].content_type, data: rows[0].file_data } : null;
+      WHERE prescription.MedicationId = ? AND attachment.AttachId = ?
+      ${doctorId ? 'AND prescription.doctor_user_id = ?' : ''}
+    `, doctorId ? [prescriptionId, attachmentId, doctorId] : [prescriptionId, attachmentId]);
+    return rows[0] ? {
+      doctorId: rows[0].doctor_user_id,
+      name: rows[0].file_name,
+      type: rows[0].content_type,
+      size: Number(rows[0].file_size),
+      data: rows[0].file_data,
+    } : null;
   }
 
   async deletePrescriptionAttachment(doctorId, prescriptionId, attachmentId) {

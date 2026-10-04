@@ -53,7 +53,12 @@ For patients, only full name, gender, and age are mandatory; address/locality,
 email, phone, and date of birth may be left blank. Patient data is loaded from
 MariaDB; browser-stored patient records are discarded and are not shown after
 sign-in. Prescriptions and attachment file data are saved to MariaDB and loaded
-only from authenticated APIs. Existing appointment and prescription records
+only from authenticated APIs. Prescription attachments are gzip-compressed by
+the browser before upload, stored in `medfiles/<doctor-login-id>/` on the
+server, and kept compressed in MariaDB as a fallback. The browser keeps a
+compressed IndexedDB copy per doctor and tries that local copy before fetching
+the compressed server copy. Make sure the app directory is persistently writable
+and included in server backups. Existing appointment and prescription records
 stored only in browsers are discarded and are not migrated. Do not enter real
 patient information.
 
@@ -77,10 +82,14 @@ command. Set these server-side environment variables in Hostinger:
 - `DB_TABLE_PREFIX` to a different alphanumeric/underscore prefix if this
   MariaDB database is shared with another app. The default is `docvisit`.
 
-The app creates the prefixed MariaDB tables when it starts, binds to `0.0.0.0`
-in production, and honors Hostinger's `PORT` environment variable. Attach
-`mypatients.in` to the app in hPanel and enable Hostinger SSL before sharing
-the site. The old SQLite authentication data, if any, is not imported
+The app creates the prefixed MariaDB tables and the `medfiles` attachment
+directory when it starts, binds to `0.0.0.0` in production, and honors
+Hostinger's `PORT` environment variable. The application root must remain
+writable and persistent so attachment files survive restarts and deployments.
+By default, `medfiles` is created beside `server.mjs`; set `MEDFILES_DIRECTORY`
+to use a different absolute path or a path relative to the application root.
+Attach `mypatients.in` to the app in hPanel and enable Hostinger SSL before
+sharing the site. The old SQLite authentication data, if any, is not imported
 automatically; provision accounts again after deployment.
 
 For integration tests, provide a dedicated, disposable MariaDB test database
@@ -99,7 +108,8 @@ Deploy the app behind HTTPS, open its URL in the phone's browser, and choose
 **Add to Home Screen** (iOS Safari) or **Install app** (supported Android
 browsers). The manifest and service worker enable installation and cache static
 assets only; API responses and HTML pages containing account data are never
-cached. The app still requires a connection to its server for sign-in and API
-requests.
+cached. Compressed prescription attachments are stored separately in the
+browser's IndexedDB for local-first viewing, and the app still requires a
+connection to its server for sign-in and uncached API requests.
 
 This is a prototype. Use sample data only; do not enter real patient information.

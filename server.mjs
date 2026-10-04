@@ -1,9 +1,12 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import mariadb from 'mariadb';
 import { AuthStore, validatePassword } from './src/lib/auth-store.mjs';
+import { AttachmentFiles } from './src/lib/attachment-files.mjs';
 
 const siteDirectory = dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(await (await import('node:fs/promises')).readFile(resolve(siteDirectory, 'server.config.json'), 'utf8'));
@@ -54,6 +57,11 @@ const distDirectory = resolve(siteDirectory, 'dist');
 if (!existsSync(resolve(distDirectory, 'index.html'))) {
   throw new Error('Built site not found. Run npm run build before starting the server.');
 }
+const medfilesDirectory = resolve(siteDirectory, process.env.MEDFILES_DIRECTORY || 'medfiles');
+await mkdir(medfilesDirectory, { recursive: true, mode: 0o700 });
+const attachmentFiles = new AttachmentFiles(medfilesDirectory);
+const maxAttachmentBytes = 20 * 1024 * 1024;
+const maxCompressedAttachmentBytes = maxAttachmentBytes + 64 * 1024;
 
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -436,6 +444,12 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === 'DELETE') {
+        const existing = (await store.listPrescriptions(session.user.id)).find((item) => item.id === prescriptionId);
+        if (existing) {
+          for (const attachment of existing.attachments) {
+            await attachmentFiles.remove(session.user.id, attachment.id);
+          }
+        }
         const deleted = await store.deletePrescription(session.user.id, prescriptionId);
         sendJson(response, deleted ? 200 : 404, deleted ? { ok: true } : { error: 'Prescription not found.' });
         return;
@@ -474,14 +488,40 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === 'POST' && !attachmentId) {
-        const contentType = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        const contentType = String(request.headers['x-original-content-type'] || '').trim().toLowerCase();
+        const originalSize = Number(request.headers['x-original-size']);
         const name = url.searchParams.get('name') || '';
         try {
-          const data = await readBuffer(request, 20 * 1024 * 1024);
-          const attachment = await store.addPrescriptionAttachment(session.user.id, prescriptionId, { name, type: contentType, data });
+          const compressed = await readBuffer(request, maxCompressedAttachmentBytes);
+          let original;
+          try {
+            original = gunzipSync(compressed, { maxOutputLength: maxAttachmentBytes });
+          } catch {
+            throw Object.assign(new Error('Attachment upload must use gzip compression.'), { status: 400 });
+          }
+          if (!Number.isInteger(originalSize) || originalSize !== original.length) {
+            throw Object.assign(new Error('Compressed attachment size does not match its original size.'), { status: 400 });
+          }
+          const attachment = await store.addPrescriptionAttachment(session.user.id, prescriptionId, {
+            name,
+            type: contentType,
+            size: originalSize,
+            data: compressed,
+          });
           if (!attachment) {
             sendJson(response, 404, { error: 'Prescription not found.' });
             return;
+          }
+          try {
+            await attachmentFiles.save(session.user.id, attachment.id, compressed);
+          } catch (error) {
+            console.error('Could not persist prescription attachment in medfiles.', error);
+            try {
+              await store.deletePrescriptionAttachment(session.user.id, prescriptionId, attachment.id);
+            } catch (cleanupError) {
+              console.error('Could not roll back prescription attachment metadata after a file-storage error.', cleanupError);
+            }
+            throw Object.assign(new Error('Could not save the prescription attachment on the server.'), { status: 500 });
           }
           sendJson(response, 201, { attachment });
         } catch (error) {
@@ -491,22 +531,37 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === 'GET' && attachmentId) {
+        const doctorId = session.user.role === 'doctor' ? session.user.id : null;
+        const attachment = await store.getPrescriptionAttachment(doctorId, prescriptionId, attachmentId);
+        if (!attachment) {
+          sendJson(response, 404, { error: 'Prescription attachment not found.' });
+          return;
+        }
+        let compressed = await attachmentFiles.read(attachment.doctorId, attachmentId);
+        if (!compressed) {
+          const stored = Buffer.from(attachment.data);
+          compressed = stored[0] === 0x1f && stored[1] === 0x8b ? stored : gzipSync(stored);
+          await attachmentFiles.save(attachment.doctorId, attachmentId, compressed);
+        }
+        const safeName = attachment.name.replace(/["\\\r\n]/g, '_');
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/gzip',
+          'Content-Disposition': `inline; filename="${safeName}"`,
+          'X-Original-Content-Type': attachment.type,
+          'X-Original-Size': String(attachment.size),
+          'X-Content-Type-Options': 'nosniff',
+        });
+        response.end(compressed);
+        return;
+      }
+      if (request.method === 'DELETE' && attachmentId) {
         const attachment = await store.getPrescriptionAttachment(session.user.id, prescriptionId, attachmentId);
         if (!attachment) {
           sendJson(response, 404, { error: 'Prescription attachment not found.' });
           return;
         }
-        const safeName = attachment.name.replace(/["\\\r\n]/g, '_');
-        response.writeHead(200, {
-          'Cache-Control': 'no-store',
-          'Content-Type': attachment.type,
-          'Content-Disposition': `inline; filename="${safeName}"`,
-          'X-Content-Type-Options': 'nosniff',
-        });
-        response.end(attachment.data);
-        return;
-      }
-      if (request.method === 'DELETE' && attachmentId) {
+        await attachmentFiles.remove(attachment.doctorId, attachmentId);
         const deleted = await store.deletePrescriptionAttachment(session.user.id, prescriptionId, attachmentId);
         sendJson(response, deleted ? 200 : 404, deleted ? { ok: true } : { error: 'Prescription attachment not found.' });
         return;

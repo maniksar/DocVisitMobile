@@ -13,6 +13,7 @@ let pendingAppointmentDraft = null;
 let query = '';
 let appointmentFilter = 'all';
 let activeAttachmentUrls = [];
+let attachmentCacheWarningShown = false;
 const byId = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const patientFor = (id) => records.patients.find((patient) => patient.id === id);
@@ -64,6 +65,72 @@ async function loadPrescriptions() {
   const { prescriptions } = await api('/api/prescriptions');
   records.prescriptions = prescriptions;
 }
+function openAttachmentCache() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('docvisit-medfiles', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('attachments');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function attachmentCacheRequest(mode, action) {
+  const database = await openAttachmentCache();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction('attachments', mode);
+    let result = null;
+    const request = action(transaction.objectStore('attachments'));
+    if (request) {
+      request.onsuccess = () => { result = request.result ?? null; };
+      request.onerror = () => reject(request.error);
+    }
+    transaction.oncomplete = () => {
+      database.close();
+      resolve(result);
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
+    transaction.onabort = () => {
+      database.close();
+      reject(transaction.error || new Error('Could not update local attachment storage.'));
+    };
+  });
+}
+function attachmentCacheKey(doctorId, attachmentId) {
+  return `${doctorId}:${attachmentId}`;
+}
+function reportAttachmentCacheIssue(error, message) {
+  console.error('Prescription attachment local caching failed.', error);
+  if (attachmentCacheWarningShown) return;
+  attachmentCacheWarningShown = true;
+  window.alert(message);
+}
+async function cacheCompressedAttachment(doctorId, attachmentId, compressed) {
+  await attachmentCacheRequest('readwrite', (attachments) =>
+    attachments.put(compressed, attachmentCacheKey(doctorId, attachmentId)));
+}
+async function getCachedCompressedAttachment(doctorId, attachmentId) {
+  return attachmentCacheRequest('readonly', (attachments) =>
+    attachments.get(attachmentCacheKey(doctorId, attachmentId)));
+}
+async function removeCachedAttachment(doctorId, attachmentId) {
+  await attachmentCacheRequest('readwrite', (attachments) =>
+    attachments.delete(attachmentCacheKey(doctorId, attachmentId)));
+}
+async function compressAttachment(file) {
+  if (typeof CompressionStream !== 'function') {
+    throw new Error('This browser does not support compressed attachment uploads. Update your browser and try again.');
+  }
+  return new Response(file.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+}
+async function decompressAttachment(compressed, contentType) {
+  if (typeof DecompressionStream !== 'function') {
+    throw new Error('This browser does not support compressed attachments. Update your browser and try again.');
+  }
+  const decompressed = await new Response(compressed.stream().pipeThrough(new DecompressionStream('gzip'))).blob();
+  return decompressed.slice(0, decompressed.size, contentType);
+}
 async function storePrescriptionFiles(prescriptionId, files, existingCount = 0) {
   if (files.length + existingCount > 5) throw new Error('A prescription can have at most 5 attachments.');
   const saved = [];
@@ -71,25 +138,74 @@ async function storePrescriptionFiles(prescriptionId, files, existingCount = 0) 
     if (file.size > 20 * 1024 * 1024) throw new Error('Each attachment must be 20 MB or smaller.');
     const extension = file.name.split('.').pop().toLowerCase();
     const contentType = file.type || ({ pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' })[extension] || '';
+    const compressed = await compressAttachment(file);
     const { attachment } = await api(`/api/prescriptions/${encodeURIComponent(prescriptionId)}/attachments?name=${encodeURIComponent(file.name)}`, {
       method: 'POST',
-      body: file,
-      headers: { 'Content-Type': contentType },
+      body: compressed,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'X-Original-Content-Type': contentType,
+        'X-Original-Size': String(file.size),
+      },
     });
+    try {
+      await cacheCompressedAttachment(currentUser.id, attachment.id, compressed);
+    } catch (error) {
+      reportAttachmentCacheIssue(error, 'The attachment is available on the server, but this device could not cache it locally.');
+    }
     saved.push(attachment);
   }
   return saved;
 }
 async function getAttachment(prescriptionId, attachmentId) {
+  const prescription = records.prescriptions.find((item) => item.id === prescriptionId);
+  if (!prescription) throw new Error('Prescription attachment is unavailable.');
+  const attachment = prescription.attachments.find((file) => file.id === attachmentId);
+  if (!attachment) throw new Error('Prescription attachment is unavailable.');
+  let cached;
+  try {
+    cached = await getCachedCompressedAttachment(prescription.doctorId, attachmentId);
+    if (cached) {
+      const localBlob = await decompressAttachment(cached, attachment.type);
+      if (localBlob.size !== attachment.size) throw new Error('The cached prescription attachment is incomplete.');
+      return localBlob;
+    }
+  } catch (error) {
+    reportAttachmentCacheIssue(error, 'The local attachment copy could not be read. Trying the server copy instead.');
+    try {
+      await removeCachedAttachment(prescription.doctorId, attachmentId);
+    } catch (removeError) {
+      console.warn('Could not remove the unreadable cached prescription attachment.', removeError);
+    }
+  }
   const response = await fetch(`/api/prescriptions/${encodeURIComponent(prescriptionId)}/attachments/${encodeURIComponent(attachmentId)}`, { credentials: 'same-origin' });
   if (!response.ok) {
     const result = await response.json().catch(() => ({}));
     throw new Error(result.error || 'Could not load attachment.');
   }
-  return response.blob();
+  const compressed = await response.blob();
+  const contentType = response.headers.get('X-Original-Content-Type') || '';
+  const blob = await decompressAttachment(compressed, contentType);
+  if (blob.size !== Number(response.headers.get('X-Original-Size'))) {
+    throw new Error('The downloaded prescription attachment is incomplete.');
+  }
+  try {
+    await cacheCompressedAttachment(prescription.doctorId, attachmentId, compressed);
+  } catch (error) {
+    reportAttachmentCacheIssue(error, 'The attachment is available on the server, but this device could not cache it locally.');
+  }
+  return blob;
 }
 async function deleteAttachment(prescriptionId, attachmentId) {
   await api(`/api/prescriptions/${encodeURIComponent(prescriptionId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' });
+  const prescription = records.prescriptions.find((item) => item.id === prescriptionId);
+  if (prescription) {
+    try {
+      await removeCachedAttachment(prescription.doctorId, attachmentId);
+    } catch (error) {
+      reportAttachmentCacheIssue(error, 'The attachment was deleted from the server, but its local device copy could not be removed.');
+    }
+  }
 }
 function clearModal() {
   activeAttachmentUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -648,6 +764,14 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.deletePrescription && window.confirm('Delete this prescription?')) {
     try {
       await api(`/api/prescriptions/${encodeURIComponent(target.dataset.deletePrescription)}`, { method: 'DELETE' });
+      const prescription = records.prescriptions.find((item) => item.id === target.dataset.deletePrescription);
+      for (const attachment of prescription?.attachments || []) {
+        try {
+          await removeCachedAttachment(prescription.doctorId, attachment.id);
+        } catch (error) {
+          reportAttachmentCacheIssue(error, 'The prescription was deleted from the server, but a local attachment copy could not be removed.');
+        }
+      }
       records.prescriptions = records.prescriptions.filter((item) => item.id !== target.dataset.deletePrescription);
       render();
     } catch (error) {

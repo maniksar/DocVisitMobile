@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { rm, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import mariadb from 'mariadb';
 
 const siteDirectory = fileURLToPath(new URL('..', import.meta.url));
@@ -118,6 +121,7 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
   const baseUrl = `http://127.0.0.1:${port}`;
   const superadminPassword = randomBytes(28).toString('base64url');
   const tablePrefix = `test_${randomBytes(8).toString('hex')}`;
+  const medfilesDirectory = join(siteDirectory, 'data', tablePrefix, 'medfiles');
   const databaseOptions = {
     host: process.env.MARIADB_TEST_HOST || '127.0.0.1',
     port: Number(process.env.MARIADB_TEST_PORT || 3306),
@@ -138,6 +142,7 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
       DB_USER: databaseOptions.user,
       DB_PASSWORD: databaseOptions.password,
       DB_TABLE_PREFIX: tablePrefix,
+      MEDFILES_DIRECTORY: medfilesDirectory,
       SUPERADMIN_PASSWORD: '',
       PORT: String(port),
       SERVER_HOST: '127.0.0.1',
@@ -159,6 +164,7 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
     await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_sessions\``);
     await pool.query(`DROP TABLE IF EXISTS \`${tablePrefix}_users\``);
     await pool.end();
+    await rm(medfilesDirectory, { recursive: true, force: true });
   });
   await waitUntilReady(child, baseUrl);
 
@@ -354,14 +360,48 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
   assert.equal(updatedPrescription.result.prescription.status, 'Renewal due');
 
   const attachmentBytes = Buffer.from('database-backed prescription file');
+  const compressedAttachmentBytes = gzipSync(attachmentBytes);
+  const uncompressedAttachmentResponse = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments?name=uncompressed.png`, {
+    method: 'POST',
+    headers: {
+      Cookie: doctorLogin.cookie,
+      'Content-Type': 'application/gzip',
+      'X-Original-Content-Type': 'image/png',
+      'X-Original-Size': String(attachmentBytes.length),
+    },
+    body: attachmentBytes,
+  });
+  assert.equal(uncompressedAttachmentResponse.status, 400);
   const attachmentResponse = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments?name=example.png`, {
     method: 'POST',
-    headers: { Cookie: doctorLogin.cookie, 'Content-Type': 'image/png' },
-    body: attachmentBytes,
+    headers: {
+      Cookie: doctorLogin.cookie,
+      'Content-Type': 'application/gzip',
+      'X-Original-Content-Type': 'image/png',
+      'X-Original-Size': String(attachmentBytes.length),
+    },
+    body: compressedAttachmentBytes,
   });
   const savedAttachment = await attachmentResponse.json();
   assert.equal(attachmentResponse.status, 201);
   assert.equal(savedAttachment.attachment.name, 'example.png');
+  assert.equal(savedAttachment.attachment.size, attachmentBytes.length);
+  assert.deepEqual(
+    gunzipSync(await readFile(join(medfilesDirectory, 'doctor-ava', `${savedAttachment.attachment.id}.gz`))),
+    attachmentBytes,
+  );
+  const retainedAttachmentResponse = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments?name=retained.png`, {
+    method: 'POST',
+    headers: {
+      Cookie: doctorLogin.cookie,
+      'Content-Type': 'application/gzip',
+      'X-Original-Content-Type': 'image/png',
+      'X-Original-Size': String(attachmentBytes.length),
+    },
+    body: compressedAttachmentBytes,
+  });
+  const retainedAttachment = await retainedAttachmentResponse.json();
+  assert.equal(retainedAttachmentResponse.status, 201);
   const relogin = await api(baseUrl, '/api/auth/login', {
     method: 'POST',
     body: { userId: 'doctor-ava', password: 'a changed and private password' },
@@ -369,13 +409,22 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
   assert.equal(relogin.response.status, 200);
   const prescriptionListAfterRelogin = await api(baseUrl, '/api/prescriptions', { cookie: relogin.cookie });
   assert.ok(prescriptionListAfterRelogin.result.prescriptions.some((item) => item.id === createdPrescription.result.prescription.id));
-  assert.equal(prescriptionListAfterRelogin.result.prescriptions.find((item) => item.id === createdPrescription.result.prescription.id).attachments.length, 1);
+  assert.equal(prescriptionListAfterRelogin.result.prescriptions.find((item) => item.id === createdPrescription.result.prescription.id).attachments.length, 2);
 
   const downloadedAttachment = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments/${encodeURIComponent(savedAttachment.attachment.id)}`, {
     headers: { Cookie: relogin.cookie },
   });
   assert.equal(downloadedAttachment.status, 200);
-  assert.deepEqual(Buffer.from(await downloadedAttachment.arrayBuffer()), attachmentBytes);
+  assert.equal(downloadedAttachment.headers.get('content-type'), 'application/gzip');
+  assert.deepEqual(gunzipSync(Buffer.from(await downloadedAttachment.arrayBuffer())), attachmentBytes);
+  const savedAttachmentPath = join(medfilesDirectory, 'doctor-ava', `${savedAttachment.attachment.id}.gz`);
+  await rm(savedAttachmentPath);
+  const restoredAttachmentResponse = await fetch(`${baseUrl}/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}/attachments/${encodeURIComponent(savedAttachment.attachment.id)}`, {
+    headers: { Cookie: relogin.cookie },
+  });
+  assert.equal(restoredAttachmentResponse.status, 200);
+  assert.deepEqual(gunzipSync(Buffer.from(await restoredAttachmentResponse.arrayBuffer())), attachmentBytes);
+  assert.deepEqual(gunzipSync(await readFile(savedAttachmentPath)), attachmentBytes);
   const appointmentsAfterRelogin = await api(baseUrl, '/api/appointments', { cookie: relogin.cookie });
   assert.equal(appointmentsAfterRelogin.result.appointments.length, 1);
   assert.equal(appointmentsAfterRelogin.result.appointments[0].status, 'Checked in');
@@ -391,11 +440,19 @@ test('superadmin provisions doctors who must change temporary passwords', { skip
     cookie: doctorLogin.cookie,
   });
   assert.equal(removedAttachment.response.status, 200);
+  await assert.rejects(
+    readFile(join(medfilesDirectory, 'doctor-ava', `${savedAttachment.attachment.id}.gz`)),
+    { code: 'ENOENT' },
+  );
   const removedPrescription = await api(baseUrl, `/api/prescriptions/${encodeURIComponent(createdPrescription.result.prescription.id)}`, {
     method: 'DELETE',
     cookie: doctorLogin.cookie,
   });
   assert.equal(removedPrescription.response.status, 200);
+  await assert.rejects(
+    readFile(join(medfilesDirectory, 'doctor-ava', `${retainedAttachment.attachment.id}.gz`)),
+    { code: 'ENOENT' },
+  );
   const prescriptionsAfterDelete = await api(baseUrl, '/api/prescriptions', { cookie: doctorLogin.cookie });
   assert.ok(!prescriptionsAfterDelete.result.prescriptions.some((item) => item.id === createdPrescription.result.prescription.id));
 
